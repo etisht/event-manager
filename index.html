@@ -165,8 +165,11 @@
       const [navTab, setNavTab]           = useState('events');
 
       useEffect(() => {
-        loadFromFirebase().finally(() => {
+        loadFromFirebase().then(hadData => {
           initStore();
+          // אם Firebase היה ריק — שמור את הנתונים הקיימים מה-localStorage
+          if (!hadData) scheduleFirebaseSave();
+        }).finally(() => {
           setIsLoggedIn(LS.get('auth', false));
           setIsReady(true);
         });
