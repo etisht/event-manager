@@ -167,8 +167,17 @@
       useEffect(() => {
         loadFromFirebase().then(hadData => {
           initStore();
-          // אם Firebase היה ריק — שמור את הנתונים הקיימים מה-localStorage
-          if (!hadData) scheduleFirebaseSave();
+          // אם Firebase היה ריק — שמור מיד את כל הנתונים מה-localStorage
+          if (!hadData) {
+            const data = {};
+            SYNC_KEYS.forEach(k => {
+              const v = localStorage.getItem(k);
+              if (v !== null) { try { data[k] = JSON.parse(v); } catch {} }
+            });
+            DATA_DOC.set(data)
+              .then(() => console.log('✅ נתונים הועלו ל-Firebase בהצלחה'))
+              .catch(e => console.error('❌ שגיאה בהעלאה:', e));
+          }
         }).finally(() => {
           setIsLoggedIn(LS.get('auth', false));
           setIsReady(true);
@@ -270,7 +279,7 @@
 
       const createEvent = () => {
         const id = genId();
-        const ev = { id, name: '', location: '', date: Date.now(), createdAt: Date.now() };
+        const ev = { id, name: '', location: '', date: Date.now(), createdAt: Date.now(), categories: [...LS.get('categories', [])] };
         LS.set('events', [ev, ...LS.get('events', [])]);
         nav('eventDetail', { eventId: id });
       };
@@ -407,14 +416,24 @@
     // EXPENSES TAB
     // ──────────────────────────────────────────────
     function ExpensesTab({ eventId }) {
-      const [cats, setCats]       = useState(() => [...LS.get('categories', [])].sort((a,b) => (a.sortOrder??99)-(b.sortOrder??99)));
+      const getEventCats = () => {
+        const ev = LS.get('events', []).find(e => e.id === eventId);
+        const list = ev?.categories ?? LS.get('categories', []);
+        return [...list].sort((a,b) => (a.sortOrder??99)-(b.sortOrder??99));
+      };
+
+      const [cats, setCats]       = useState(getEventCats);
       const [exps, setExps]       = useState(() => LS.get('expenses', []).filter(e => e.eventId === eventId));
       const [newCat, setNewCat]   = useState('');
       const [adding, setAdding]   = useState(false);
       const [delCat, setDelCat]   = useState(null);
 
-      const refreshCats = () => setCats([...LS.get('categories',[])].sort((a,b)=>(a.sortOrder??99)-(b.sortOrder??99)));
+      const refreshCats = () => setCats(getEventCats());
       const refreshExps = () => setExps(LS.get('expenses',[]).filter(e=>e.eventId===eventId));
+
+      const saveEventCats = (updatedList) => {
+        LS.set('events', LS.get('events', []).map(e => e.id === eventId ? { ...e, categories: updatedList } : e));
+      };
 
       const upsertExpense = (catName, amount) => {
         const all  = LS.get('expenses', []);
@@ -427,14 +446,15 @@
 
       const addCategory = () => {
         if (!newCat.trim()) return;
-        const all = LS.get('categories', []);
-        all.push({ id: genId(), name: newCat.trim(), isDefault: false, sortOrder: all.length });
-        LS.set('categories', all);
+        const current = getEventCats();
+        const updated = [...current, { id: genId(), name: newCat.trim(), isDefault: false, sortOrder: current.length }];
+        saveEventCats(updated);
         refreshCats(); setNewCat(''); setAdding(false);
       };
 
       const deleteCategory = (cat) => {
-        LS.set('categories', LS.get('categories',[]).filter(c => c.id !== cat.id));
+        const updated = getEventCats().filter(c => c.id !== cat.id);
+        saveEventCats(updated);
         refreshCats(); setDelCat(null);
       };
 
