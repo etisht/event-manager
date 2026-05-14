@@ -1,0 +1,1122 @@
+<!DOCTYPE html>
+<html dir="rtl" lang="he">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>ניהול אירועים</title>
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- Firebase -->
+  <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore-compat.js"></script>
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: 'Segoe UI', Arial, sans-serif; background: #f3f4f6; }
+    input, select, textarea { font-size: 16px !important; }
+    ::-webkit-scrollbar { width: 4px; }
+    ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 2px; }
+    .safe-pb { padding-bottom: env(safe-area-inset-bottom, 0); }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+
+  <!-- Firebase init (must run before Babel script) -->
+  <script>
+    const firebaseConfig = {
+      apiKey: "AIzaSyDdALrpYJCrtMq7eNdFcBhd6mu2DFkL40k",
+      authDomain: "event-manager-4c553.firebaseapp.com",
+      projectId: "event-manager-4c553",
+      storageBucket: "event-manager-4c553.firebasestorage.app",
+      messagingSenderId: "137813590881",
+      appId: "1:137813590881:web:0b0a9c88f278b8451d7b20"
+    };
+    firebase.initializeApp(firebaseConfig);
+    const _db = firebase.firestore();
+    const DATA_DOC = _db.collection('appData').doc('main');
+
+    const SYNC_KEYS = ['categories','giftTypes','events','expenses','eventGifts','purchases','inventoryCounts','countItems','inventorySeedVersion'];
+    let _saveTimer = null;
+
+    function scheduleFirebaseSave() {
+      if (_saveTimer) clearTimeout(_saveTimer);
+      _saveTimer = setTimeout(() => {
+        const data = {};
+        SYNC_KEYS.forEach(k => {
+          const v = localStorage.getItem(k);
+          if (v !== null) { try { data[k] = JSON.parse(v); } catch {} }
+        });
+        DATA_DOC.set(data).catch(e => console.error('Firebase save error:', e));
+      }, 800);
+    }
+
+    async function loadFromFirebase() {
+      try {
+        const snap = await DATA_DOC.get();
+        if (snap.exists) {
+          const data = snap.data();
+          Object.entries(data).forEach(([key, val]) => {
+            localStorage.setItem(key, JSON.stringify(val));
+          });
+          return true;
+        }
+      } catch(e) {
+        console.error('Firebase load error:', e);
+      }
+      return false;
+    }
+  </script>
+
+  <script type="text/babel">
+    const { useState, useEffect, useCallback, useRef } = React;
+
+    // ═══════════════════════════════════════════════
+    // ★ שנה כאן את הסיסמה לפי רצונך ★
+    const PASSWORD = "1234";
+    // ═══════════════════════════════════════════════
+
+    // ──────────────────────────────────────────────
+    // DATA LAYER — localStorage + Firebase sync
+    // ──────────────────────────────────────────────
+    const LS = {
+      get: (key, def) => { try { const v = localStorage.getItem(key); return v === null ? def : JSON.parse(v); } catch { return def; } },
+      set: (key, val) => {
+        try {
+          localStorage.setItem(key, JSON.stringify(val));
+          if (SYNC_KEYS.includes(key)) scheduleFirebaseSave();
+        } catch {}
+      },
+    };
+
+    const genId = () => Date.now() + Math.floor(Math.random() * 10000);
+
+    const DEFAULT_CATEGORIES = [
+      "רב","הגברה","עדן","מוריה","יערה",
+      "אישורי הגעה","פרסום ממומן","פרסום",
+      "צוות מוריה","עדן הראל","מאפים",
+      "אגם קניות","אולם","נהגת"
+    ].map((name, i) => ({ id: i + 1, name, isDefault: true, sortOrder: i }));
+
+    const DEFAULT_GIFT_TYPES = [
+      { id: 1,  name: "סידור",      defaultUnitPrice: 20,  isDefault: true, sortOrder: 0, currentInventory: 97,  minStockLevel: 5,  minOrderQuantity: 10 },
+      { id: 2,  name: "טלית",       defaultUnitPrice: 100, isDefault: true, sortOrder: 1, currentInventory: 20,  minStockLevel: 5,  minOrderQuantity: 5  },
+      { id: 3,  name: "כרית",       defaultUnitPrice: 100, isDefault: true, sortOrder: 2, currentInventory: 4,   minStockLevel: 5,  minOrderQuantity: 5  },
+      { id: 4,  name: "כוס חופה",   defaultUnitPrice: 15,  isDefault: true, sortOrder: 3, currentInventory: 140, minStockLevel: 10, minOrderQuantity: 10 },
+      { id: 5,  name: "כוס קידוש",  defaultUnitPrice: 60,  isDefault: true, sortOrder: 4, currentInventory: 151, minStockLevel: 10, minOrderQuantity: 10 },
+      { id: 6,  name: "תמונה",      defaultUnitPrice: 100, isDefault: true, sortOrder: 5, currentInventory: 0,   minStockLevel: 5,  minOrderQuantity: 5  },
+      { id: 7,  name: "אבן טהרה",   defaultUnitPrice: 0,   isDefault: true, sortOrder: 6, currentInventory: 27,  minStockLevel: 5,  minOrderQuantity: 5  },
+    ];
+
+    const INVENTORY_SEED_VERSION = '1';
+    const INVENTORY_SEED = { 1: 97, 2: 20, 3: 4, 4: 140, 5: 151, 6: 0, 7: 27 };
+
+    function initStore() {
+      if (!localStorage.getItem('categories'))       LS.set('categories', DEFAULT_CATEGORIES);
+      if (!localStorage.getItem('giftTypes'))        LS.set('giftTypes', DEFAULT_GIFT_TYPES);
+      if (localStorage.getItem('inventorySeedVersion') !== INVENTORY_SEED_VERSION) {
+        const gts = LS.get('giftTypes', []);
+        const hasAven = gts.some(gt => gt.id === 7);
+        const updated = gts.map(gt => INVENTORY_SEED[gt.id] !== undefined ? { ...gt, currentInventory: INVENTORY_SEED[gt.id] } : gt);
+        if (!hasAven) updated.push(DEFAULT_GIFT_TYPES.find(gt => gt.id === 7));
+        LS.set('giftTypes', updated);
+        localStorage.setItem('inventorySeedVersion', INVENTORY_SEED_VERSION);
+      }
+      if (!localStorage.getItem('events'))           LS.set('events', []);
+      if (!localStorage.getItem('expenses'))         LS.set('expenses', []);
+      if (!localStorage.getItem('eventGifts'))       LS.set('eventGifts', []);
+      if (!localStorage.getItem('purchases'))        LS.set('purchases', []);
+      if (!localStorage.getItem('inventoryCounts'))  LS.set('inventoryCounts', []);
+      if (!localStorage.getItem('countItems'))       LS.set('countItems', []);
+    }
+
+    // ──────────────────────────────────────────────
+    // UTILS
+    // ──────────────────────────────────────────────
+    const fmt = (n) => '₪' + Number(n || 0).toLocaleString('he-IL', { minimumFractionDigits: 0, maximumFractionDigits: 2 });
+    const fmtDate  = (ts) => ts ? new Date(ts).toLocaleDateString('he-IL', { day:'2-digit', month:'2-digit', year:'numeric' }) : '';
+    const fmtFull  = (ts) => ts ? new Date(ts).toLocaleDateString('he-IL', { day:'2-digit', month:'2-digit', year:'numeric', weekday:'long' }) : '';
+    const toDateInput = (ts) => { const d = new Date(ts || Date.now()); return d.toISOString().split('T')[0]; };
+    const fromDateInput = (s) => new Date(s).getTime();
+
+    // ──────────────────────────────────────────────
+    // LOADING SCREEN
+    // ──────────────────────────────────────────────
+    function LoadingScreen() {
+      return (
+        <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-blue-50 to-indigo-100" dir="rtl">
+          <div className="text-center">
+            <div className="text-6xl mb-4">🎊</div>
+            <p className="text-gray-500 text-lg">טוען נתונים...</p>
+          </div>
+        </div>
+      );
+    }
+
+    // ──────────────────────────────────────────────
+    // ROOT APP
+    // ──────────────────────────────────────────────
+    function App() {
+      const [isReady, setIsReady]         = useState(false);
+      const [isLoggedIn, setIsLoggedIn]   = useState(false);
+      const [screen, setScreen]           = useState('events');
+      const [params, setParams]           = useState({});
+      const [navTab, setNavTab]           = useState('events');
+
+      useEffect(() => {
+        loadFromFirebase().finally(() => {
+          initStore();
+          setIsLoggedIn(LS.get('auth', false));
+          setIsReady(true);
+        });
+      }, []);
+
+      if (!isReady) return <LoadingScreen />;
+
+      const nav = (s, p = {}) => { setScreen(s); setParams(p); if (s === 'events' || s === 'inventory') setNavTab(s); };
+      const goBack = () => {
+        if (screen === 'eventDetail')   nav('events');
+        else if (screen === 'inventoryCount' || screen === 'giftTypes') nav('inventory');
+        else nav('events');
+      };
+
+      const login = (pass) => { if (pass === PASSWORD) { LS.set('auth', true); setIsLoggedIn(true); return true; } return false; };
+      const logout = () => { LS.set('auth', false); setIsLoggedIn(false); };
+
+      if (!isLoggedIn) return <LoginScreen onLogin={login} />;
+
+      const isMain = screen === 'events' || screen === 'inventory';
+
+      return (
+        <div style={{direction:'rtl'}} className="flex flex-col h-screen max-w-lg mx-auto bg-white shadow-2xl overflow-hidden">
+          <div className="flex-1 overflow-hidden flex flex-col">
+            {screen === 'events'         && <EventsListScreen nav={nav} />}
+            {screen === 'eventDetail'    && <EventDetailScreen eventId={params.eventId} onBack={goBack} />}
+            {screen === 'inventory'      && <InventoryScreen nav={nav} />}
+            {screen === 'inventoryCount' && <InventoryCountScreen countId={params.countId} onBack={goBack} />}
+            {screen === 'giftTypes'      && <GiftTypesScreen onBack={goBack} />}
+          </div>
+          {isMain && <BottomNav tab={navTab} onTab={(t) => nav(t)} onLogout={logout} />}
+        </div>
+      );
+    }
+
+    // ──────────────────────────────────────────────
+    // LOGIN
+    // ──────────────────────────────────────────────
+    function LoginScreen({ onLogin }) {
+      const [pass, setPass] = useState('');
+      const [err, setErr]   = useState('');
+      const submit = (e) => { e.preventDefault(); if (!onLogin(pass)) { setErr('סיסמה שגויה'); setPass(''); } };
+      return (
+        <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-blue-50 to-indigo-100 p-4" dir="rtl">
+          <div className="bg-white rounded-3xl shadow-2xl p-8 w-full max-w-sm">
+            <div className="text-center mb-8">
+              <div className="text-6xl mb-3">🎊</div>
+              <h1 className="text-2xl font-bold text-gray-800">ניהול אירועים</h1>
+              <p className="text-gray-400 text-sm mt-1">טהרת המשפחה</p>
+            </div>
+            <form onSubmit={submit} className="space-y-4">
+              <input
+                type="password" value={pass}
+                onChange={e => { setPass(e.target.value); setErr(''); }}
+                className="w-full border-2 border-gray-200 rounded-xl px-4 py-3 text-right focus:outline-none focus:border-blue-500 transition-colors"
+                placeholder="הזן סיסמה" autoFocus
+              />
+              {err && <p className="text-red-500 text-sm text-center">{err}</p>}
+              <button type="submit" className="w-full bg-blue-600 text-white py-3 rounded-xl font-bold text-lg hover:bg-blue-700 active:scale-95 transition-all">
+                כניסה
+              </button>
+            </form>
+          </div>
+        </div>
+      );
+    }
+
+    // ──────────────────────────────────────────────
+    // BOTTOM NAV
+    // ──────────────────────────────────────────────
+    function BottomNav({ tab, onTab, onLogout }) {
+      const btn = (t, icon, label) => (
+        <button onClick={() => onTab(t)} className={`flex-1 py-3 flex flex-col items-center gap-0.5 text-xs font-medium transition-colors ${tab === t ? 'text-blue-600' : 'text-gray-400 hover:text-gray-600'}`}>
+          <span className="text-2xl leading-none">{icon}</span>
+          <span>{label}</span>
+        </button>
+      );
+      return (
+        <div className="border-t border-gray-100 bg-white flex safe-pb shrink-0">
+          {btn('events',    '📋', 'אירועים')}
+          {btn('inventory', '📦', 'מלאי')}
+          <button onClick={onLogout} className="flex-1 py-3 flex flex-col items-center gap-0.5 text-xs font-medium text-red-400 hover:text-red-500">
+            <span className="text-2xl leading-none">🚪</span>
+            <span>יציאה</span>
+          </button>
+        </div>
+      );
+    }
+
+    // ──────────────────────────────────────────────
+    // EVENTS LIST
+    // ──────────────────────────────────────────────
+    function EventsListScreen({ nav }) {
+      const [events, setEvents]           = useState(() => LS.get('events', []));
+      const [deleteConfirm, setDelete]    = useState(null);
+
+      const refresh = () => setEvents(LS.get('events', []));
+
+      const createEvent = () => {
+        const id = genId();
+        const ev = { id, name: '', location: '', date: Date.now(), createdAt: Date.now() };
+        LS.set('events', [ev, ...LS.get('events', [])]);
+        nav('eventDetail', { eventId: id });
+      };
+
+      const deleteEvent = (id) => {
+        LS.set('events',     LS.get('events', []).filter(e => e.id !== id));
+        LS.set('expenses',   LS.get('expenses', []).filter(e => e.eventId !== id));
+        LS.set('eventGifts', LS.get('eventGifts', []).filter(g => g.eventId !== id));
+        refresh(); setDelete(null);
+      };
+
+      const exportCSV = () => {
+        const evs  = LS.get('events', []);
+        const exps = LS.get('expenses', []);
+        const gifs = LS.get('eventGifts', []);
+        const rows = [['אירוע','תאריך','מיקום','הוצאות','מתנות','סה"כ']];
+        evs.forEach(e => {
+          const te = exps.filter(x => x.eventId === e.id).reduce((s,x) => s + x.amount, 0);
+          const tg = gifs.filter(g => g.eventId === e.id).reduce((s,g) => s + g.quantity * g.unitPrice, 0);
+          rows.push([e.name || e.location, fmtDate(e.date), e.location, te.toFixed(2), tg.toFixed(2), (te+tg).toFixed(2)]);
+        });
+        const csv = '﻿' + rows.map(r => r.map(c => `"${c}"`).join(',')).join('\n');
+        dlBlob(csv, 'events.csv', 'text/csv;charset=utf-8');
+      };
+
+      const sorted = [...events].sort((a,b) => b.date - a.date);
+
+      return (
+        <div className="flex flex-col h-full">
+          <TopBar title="אירועים" right={<IconBtn icon="⬇️" onClick={exportCSV} />} />
+          <div className="flex-1 overflow-y-auto py-2">
+            {sorted.length === 0
+              ? <EmptyState icon="📋" title="אין אירועים עדיין" sub="לחץ + להוספת אירוע ראשון" />
+              : sorted.map(ev => <EventCard key={ev.id} event={ev} onClick={() => nav('eventDetail',{eventId:ev.id})} onDelete={() => setDelete(ev)} />)
+            }
+          </div>
+          <FAB icon="+" onClick={createEvent} bottom="bottom-20" />
+          {deleteConfirm && <Confirm title="מחיקת אירוע" msg={`למחוק את האירוע "${deleteConfirm.location||deleteConfirm.name}"? כל ההוצאות והמתנות יימחקו.`} onOk={() => deleteEvent(deleteConfirm.id)} onCancel={() => setDelete(null)} />}
+        </div>
+      );
+    }
+
+    function EventCard({ event, onClick, onDelete }) {
+      const exps = LS.get('expenses', []).filter(e => e.eventId === event.id);
+      const gifs = LS.get('eventGifts', []).filter(g => g.eventId === event.id);
+      const te   = exps.reduce((s,e) => s + e.amount, 0);
+      const tg   = gifs.reduce((s,g) => s + g.quantity * g.unitPrice, 0);
+      return (
+        <div className="mx-3 my-2 bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden flex">
+          <div className="flex-1 p-4 cursor-pointer active:bg-gray-50" onClick={onClick}>
+            <div className="flex justify-between items-start mb-2">
+              <span className="font-bold text-gray-800 text-base">{event.location || 'ללא מיקום'}</span>
+              <span className="text-sm text-blue-500 font-medium">{fmtDate(event.date)}</span>
+            </div>
+            <div className="flex justify-between text-xs text-gray-500 gap-1 flex-wrap">
+              <span>הוצאות: {fmt(te)}</span>
+              <span>מתנות: {fmt(tg)}</span>
+              <span className="font-bold text-blue-600">סה"כ: {fmt(te+tg)}</span>
+            </div>
+          </div>
+          <button onClick={onDelete} className="px-3 text-red-300 hover:text-red-500 hover:bg-red-50 border-r border-gray-100 transition-colors text-xl">🗑️</button>
+        </div>
+      );
+    }
+
+    // ──────────────────────────────────────────────
+    // EVENT DETAIL
+    // ──────────────────────────────────────────────
+    function EventDetailScreen({ eventId, onBack }) {
+      const initEv   = () => LS.get('events', []).find(e => e.id === eventId) || { id: eventId, name:'', location:'', date: Date.now() };
+      const [ev, setEv]       = useState(initEv);
+      const [location, setLoc] = useState(() => initEv().location || '');
+      const [date, setDate]   = useState(() => toDateInput(initEv().date));
+      const [tab, setTab]     = useState(0);
+      const [showDel, setDel] = useState(false);
+      const saveTimer = useRef(null);
+
+      const saveHeader = (loc, dt) => {
+        if (saveTimer.current) clearTimeout(saveTimer.current);
+        saveTimer.current = setTimeout(() => {
+          const ts = fromDateInput(dt);
+          const name = `${loc || 'אירוע'} ${fmtDate(ts)}`;
+          const evs = LS.get('events', []).map(e => e.id === eventId ? { ...e, name, location: loc, date: ts } : e);
+          LS.set('events', evs);
+        }, 300);
+      };
+
+      const handleLoc  = (v) => { setLoc(v);  saveHeader(v, date); };
+      const handleDate = (v) => { setDate(v); saveHeader(location, v); };
+
+      const doDelete = () => {
+        LS.set('events',     LS.get('events', []).filter(e => e.id !== eventId));
+        LS.set('expenses',   LS.get('expenses', []).filter(e => e.eventId !== eventId));
+        LS.set('eventGifts', LS.get('eventGifts', []).filter(g => g.eventId !== eventId));
+        onBack();
+      };
+
+      const title = `${location || 'אירוע חדש'}  ${fmtDate(fromDateInput(date))}`;
+      const tabs  = ['הוצאות','מתנות','סיכום'];
+
+      return (
+        <div className="flex flex-col h-full">
+          <TopBar
+            title={<span className="text-sm font-medium truncate">{title}</span>}
+            left={<IconBtn icon="←" onClick={onBack} />}
+            right={<IconBtn icon="🗑️" onClick={() => setDel(true)} />}
+          />
+          <div className="px-3 py-2 bg-gray-50 border-b flex gap-2 shrink-0">
+            <input type="text" value={location} onChange={e => handleLoc(e.target.value)}
+              placeholder="מיקום האירוע"
+              className="flex-1 border rounded-xl px-3 py-2 text-right focus:outline-none focus:ring-2 focus:ring-blue-400 bg-white text-sm" />
+            <input type="date" value={date} onChange={e => handleDate(e.target.value)}
+              className="flex-1 border rounded-xl px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-400 bg-white text-sm" />
+          </div>
+          <div className="flex border-b bg-white shrink-0">
+            {tabs.map((t,i) => (
+              <button key={i} onClick={() => setTab(i)}
+                className={`flex-1 py-2.5 text-sm font-medium transition-colors ${tab===i ? 'border-b-2 border-blue-600 text-blue-600' : 'text-gray-400'}`}>
+                {t}
+              </button>
+            ))}
+          </div>
+          <div className="flex-1 overflow-y-auto">
+            {tab === 0 && <ExpensesTab eventId={eventId} />}
+            {tab === 1 && <GiftsTab eventId={eventId} location={location} dateTs={fromDateInput(date)} />}
+            {tab === 2 && <SummaryTab eventId={eventId} location={location} dateTs={fromDateInput(date)} />}
+          </div>
+          {showDel && <Confirm title="מחיקת אירוע" msg={`למחוק את האירוע "${title}"?`} onOk={doDelete} onCancel={() => setDel(false)} />}
+        </div>
+      );
+    }
+
+    // ──────────────────────────────────────────────
+    // EXPENSES TAB
+    // ──────────────────────────────────────────────
+    function ExpensesTab({ eventId }) {
+      const [cats, setCats]       = useState(() => [...LS.get('categories', [])].sort((a,b) => (a.sortOrder??99)-(b.sortOrder??99)));
+      const [exps, setExps]       = useState(() => LS.get('expenses', []).filter(e => e.eventId === eventId));
+      const [newCat, setNewCat]   = useState('');
+      const [adding, setAdding]   = useState(false);
+      const [delCat, setDelCat]   = useState(null);
+
+      const refreshCats = () => setCats([...LS.get('categories',[])].sort((a,b)=>(a.sortOrder??99)-(b.sortOrder??99)));
+      const refreshExps = () => setExps(LS.get('expenses',[]).filter(e=>e.eventId===eventId));
+
+      const upsertExpense = (catName, amount) => {
+        const all  = LS.get('expenses', []);
+        const idx  = all.findIndex(e => e.eventId === eventId && e.categoryName === catName);
+        if (idx >= 0) all[idx] = { ...all[idx], amount };
+        else all.push({ id: genId(), eventId, categoryName: catName, amount });
+        LS.set('expenses', all);
+        refreshExps();
+      };
+
+      const addCategory = () => {
+        if (!newCat.trim()) return;
+        const all = LS.get('categories', []);
+        all.push({ id: genId(), name: newCat.trim(), isDefault: false, sortOrder: all.length });
+        LS.set('categories', all);
+        refreshCats(); setNewCat(''); setAdding(false);
+      };
+
+      const deleteCategory = (cat) => {
+        LS.set('categories', LS.get('categories',[]).filter(c => c.id !== cat.id));
+        refreshCats(); setDelCat(null);
+      };
+
+      const expMap = {};
+      exps.forEach(e => { expMap[e.categoryName] = e.amount; });
+      const total = exps.reduce((s,e) => s + e.amount, 0);
+
+      return (
+        <div className="pb-4">
+          {cats.map(cat => (
+            <ExpenseRow key={cat.id} categoryName={cat.name}
+              initialAmount={expMap[cat.name] || 0}
+              onAmountChange={amt => upsertExpense(cat.name, amt)}
+              onDelete={() => setDelCat(cat)}
+            />
+          ))}
+          <div className="px-4 py-3 border-t bg-blue-50 flex justify-between font-bold">
+            <span>סה"כ הוצאות</span>
+            <span className="text-blue-700">{fmt(total)}</span>
+          </div>
+          {adding
+            ? <div className="flex gap-2 px-3 py-2 border-t">
+                <input autoFocus value={newCat} onChange={e=>setNewCat(e.target.value)}
+                  onKeyDown={e=>{if(e.key==='Enter')addCategory();if(e.key==='Escape')setAdding(false);}}
+                  placeholder="שם הקטגוריה" className="flex-1 border rounded-xl px-3 py-2 text-right focus:outline-none focus:ring-2 focus:ring-blue-400 text-sm" />
+                <button onClick={addCategory} className="bg-blue-600 text-white px-4 rounded-xl text-sm hover:bg-blue-700">הוסף</button>
+                <button onClick={()=>setAdding(false)} className="border px-3 rounded-xl text-sm hover:bg-gray-50">ביטול</button>
+              </div>
+            : <button onClick={()=>setAdding(true)} className="w-full py-3 text-blue-600 border-t flex items-center justify-center gap-2 hover:bg-blue-50 text-sm">
+                <span className="text-lg">+</span> הוסף קטגוריה
+              </button>
+          }
+          {delCat && <Confirm title="מחיקת קטגוריה" msg={`למחוק את "${delCat.name}"?`} okText="מחק" onOk={() => deleteCategory(delCat)} onCancel={() => setDelCat(null)} />}
+        </div>
+      );
+    }
+
+    function ExpenseRow({ categoryName, initialAmount, onAmountChange, onDelete }) {
+      const [val, setVal] = useState(initialAmount === 0 ? '' : String(initialAmount));
+      useEffect(() => { setVal(initialAmount === 0 ? '' : String(initialAmount)); }, [initialAmount]);
+      return (
+        <div className="flex items-center px-3 py-2 border-b hover:bg-gray-50 gap-2">
+          <button onClick={onDelete} className="text-red-300 hover:text-red-500 text-lg transition-colors">🗑️</button>
+          <span className="flex-1 text-gray-800 text-sm">{categoryName}</span>
+          <div className="flex items-center border rounded-xl overflow-hidden bg-white">
+            <span className="px-2 text-gray-400 bg-gray-50 border-l py-2 text-sm">₪</span>
+            <input type="number" value={val} onChange={e=>{setVal(e.target.value);onAmountChange(parseFloat(e.target.value)||0);}}
+              placeholder="0" className="w-24 px-2 py-2 text-left focus:outline-none text-sm" />
+          </div>
+        </div>
+      );
+    }
+
+    // ──────────────────────────────────────────────
+    // GIFTS TAB
+    // ──────────────────────────────────────────────
+    function GiftsTab({ eventId, location, dateTs }) {
+      const [giftTypes] = useState(() => LS.get('giftTypes', []));
+      const [draft, setDraft] = useState(() => {
+        const saved = LS.get('eventGifts', []).filter(g => g.eventId === eventId);
+        const m = {};
+        saved.forEach(g => { m[g.giftTypeId] = { qty: g.quantity, price: g.unitPrice }; });
+        return m;
+      });
+      const [savedMsg, setSaved] = useState(false);
+
+      const updateDraft = (id, qty, price) => setDraft(d => ({ ...d, [id]: { qty, price } }));
+
+      const saveGifts = () => {
+        const oldGifts = LS.get('eventGifts', []).filter(g => g.eventId === eventId);
+        const oldMap   = {};
+        oldGifts.forEach(g => { oldMap[g.giftTypeId] = g.quantity; });
+
+        const newGifts = giftTypes.map(gt => ({
+          id: genId(), eventId, giftTypeId: gt.id, giftTypeName: gt.name,
+          quantity:  (draft[gt.id]?.qty  ?? 0),
+          unitPrice: (draft[gt.id]?.price ?? gt.defaultUnitPrice),
+        }));
+
+        const deltas = {};
+        giftTypes.forEach(gt => {
+          deltas[gt.id] = (draft[gt.id]?.qty ?? 0) - (oldMap[gt.id] ?? 0);
+        });
+
+        const allGifts = LS.get('eventGifts', []).filter(g => g.eventId !== eventId);
+        LS.set('eventGifts', [...allGifts, ...newGifts]);
+
+        const gts = LS.get('giftTypes', []).map(gt => ({ ...gt, currentInventory: gt.currentInventory - (deltas[gt.id] || 0) }));
+        LS.set('giftTypes', gts);
+
+        setSaved(true); setTimeout(() => setSaved(false), 2000);
+      };
+
+      const copyDeductions = () => {
+        const active = giftTypes.filter(gt => (draft[gt.id]?.qty || 0) > 0);
+        if (!active.length) { alert('אין מתנות לדיווח'); return; }
+        let txt = `פריטים שנמכרו בתאריך ${fmtFull(dateTs)} ${location} - אירוע של טהרת המשפחה:\n`;
+        let tot = 0;
+        active.forEach(gt => {
+          const qty = draft[gt.id]?.qty || 0;
+          const price = draft[gt.id]?.price ?? gt.defaultUnitPrice;
+          const line = qty * price; tot += line;
+          txt += `${gt.name} × ${qty} × ${fmt(price)} = ${fmt(line)}\n`;
+        });
+        txt += `סה"כ: ${fmt(tot)}`;
+        copyText(txt);
+      };
+
+      const total = giftTypes.reduce((s, gt) => {
+        const { qty=0, price=gt.defaultUnitPrice } = draft[gt.id] || {};
+        return s + qty * price;
+      }, 0);
+
+      return (
+        <div className="pb-4">
+          <div className="flex text-xs font-semibold text-gray-400 px-3 py-2 bg-gray-50 border-b">
+            <span className="flex-[2]">מתנה</span>
+            <span className="flex-[1.2] text-center">כמות</span>
+            <span className="flex-[1.2] text-center">מחיר</span>
+            <span className="flex-[1.2] text-left">סה"כ</span>
+          </div>
+          {giftTypes.map(gt => {
+            const { qty=0, price=gt.defaultUnitPrice } = draft[gt.id] || {};
+            return (
+              <GiftRow key={gt.id} giftType={gt} quantity={qty} price={price}
+                onQty={q => updateDraft(gt.id, q, draft[gt.id]?.price ?? gt.defaultUnitPrice)}
+                onPrice={p => updateDraft(gt.id, draft[gt.id]?.qty ?? 0, p)} />
+            );
+          })}
+          <div className="px-4 py-3 border-t bg-blue-50 space-y-3">
+            <div className="flex justify-between font-bold">
+              <span>סה"כ מתנות</span>
+              <span className="text-blue-700">{fmt(total)}</span>
+            </div>
+            <div className="flex gap-2">
+              <button onClick={saveGifts} className={`flex-1 py-2.5 rounded-xl font-medium text-sm transition-all ${savedMsg ? 'bg-green-500 text-white' : 'bg-blue-600 text-white hover:bg-blue-700 active:scale-95'}`}>
+                {savedMsg ? '✓ נשמר' : '💾 שמור'}
+              </button>
+              <button onClick={copyDeductions} className="flex-1 py-2.5 rounded-xl border border-blue-600 text-blue-600 font-medium text-sm hover:bg-blue-50 active:scale-95">
+                📋 העתק מתנות
+              </button>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    function GiftRow({ giftType, quantity, price, onQty, onPrice }) {
+      const [qtyV,  setQtyV]  = useState(quantity === 0 ? '' : String(quantity));
+      const [priceV,setPriceV]= useState(String(price));
+      useEffect(() => setQtyV(quantity === 0 ? '' : String(quantity)), [quantity]);
+      useEffect(() => setPriceV(String(price)), [price]);
+      const total = (parseInt(qtyV)||0) * (parseFloat(priceV)||0);
+      return (
+        <div className="flex items-center px-3 py-2 border-b hover:bg-gray-50 gap-1">
+          <span className="flex-[2] text-sm text-gray-800">{giftType.name}</span>
+          <input type="number" value={qtyV}
+            onChange={e=>{setQtyV(e.target.value);onQty(parseInt(e.target.value)||0);}}
+            placeholder="0" className="flex-[1.2] mx-0.5 border rounded-lg px-2 py-1.5 text-center text-sm focus:outline-none focus:ring-1 focus:ring-blue-400" />
+          <div className="flex-[1.2] mx-0.5 flex items-center border rounded-lg overflow-hidden">
+            <span className="text-xs text-gray-400 px-1 py-1.5">₪</span>
+            <input type="number" value={priceV}
+              onChange={e=>{setPriceV(e.target.value);onPrice(parseFloat(e.target.value)||0);}}
+              className="w-0 flex-1 py-1.5 px-1 text-sm focus:outline-none" />
+          </div>
+          <span className="flex-[1.2] text-sm font-bold text-left text-gray-700 pr-1">₪{total.toFixed(0)}</span>
+        </div>
+      );
+    }
+
+    // ──────────────────────────────────────────────
+    // SUMMARY TAB
+    // ──────────────────────────────────────────────
+    function SummaryTab({ eventId, location, dateTs }) {
+      const exps     = LS.get('expenses', []).filter(e => e.eventId === eventId);
+      const gifts    = LS.get('eventGifts', []).filter(g => g.eventId === eventId);
+      const giftTypes= LS.get('giftTypes', []);
+      const te = exps.reduce((s,e)=>s+e.amount,0);
+      const tg = gifts.reduce((s,g)=>s+g.quantity*g.unitPrice,0);
+      const gt_total = te + tg;
+
+      const recs = giftTypes.filter(gt => gt.minStockLevel > 0 && gt.currentInventory < gt.minStockLevel).map(gt => {
+        const deficit = gt.minStockLevel - gt.currentInventory;
+        const order   = gt.minOrderQuantity > 0 ? Math.ceil(deficit/gt.minOrderQuantity)*gt.minOrderQuantity : deficit;
+        return { ...gt, order };
+      });
+
+      const copyFull = () => {
+        const active = gifts.filter(g => g.quantity > 0);
+        let txt = `אירוע: ${location}\nתאריך: ${fmtFull(dateTs)}\nמיקום: ${location}\n\n`;
+        if (exps.length) { txt += 'הוצאות:\n'; exps.forEach(e=>{txt+=`${e.categoryName} - ${fmt(e.amount)}\n`;}); txt+=`סה"כ הוצאות: ${fmt(te)}\n\n`; }
+        if (active.length) { txt += 'מתנות:\n'; active.forEach(g=>{txt+=`${g.giftTypeName} ${g.quantity} × ${fmt(g.unitPrice)} = ${fmt(g.quantity*g.unitPrice)}\n`;}); txt+=`סה"כ מתנות: ${fmt(tg)}\n\n`; }
+        txt += `סה"כ כולל: ${fmt(gt_total)}`;
+        copyText(txt);
+      };
+
+      const copyDed = () => {
+        const active = gifts.filter(g => g.quantity > 0);
+        if (!active.length) { alert('אין מתנות לדיווח'); return; }
+        let txt = `פריטים שנמכרו בתאריך ${fmtFull(dateTs)} ${location} - אירוע של טהרת המשפחה:\n`;
+        let tot = 0;
+        active.forEach(g=>{const l=g.quantity*g.unitPrice;tot+=l;txt+=`${g.giftTypeName} × ${g.quantity} × ${fmt(g.unitPrice)} = ${fmt(l)}\n`;});
+        txt += `סה"כ: ${fmt(tot)}`;
+        copyText(txt);
+      };
+
+      return (
+        <div className="p-4 space-y-4">
+          <div className="bg-white rounded-2xl shadow-sm border border-gray-100 divide-y divide-gray-100">
+            <SummaryRow label="סה&quot;כ הוצאות" value={fmt(te)} />
+            <SummaryRow label='סה"כ מתנות'   value={fmt(tg)} />
+            <SummaryRow label='סה"כ כולל' value={fmt(gt_total)} bold />
+          </div>
+          <button onClick={copyFull} className="w-full py-3 bg-blue-600 text-white rounded-2xl font-medium hover:bg-blue-700 active:scale-95 transition-all flex items-center justify-center gap-2">
+            📋 העתק סיכום מלא לוואטסאפ
+          </button>
+          <button onClick={copyDed} className="w-full py-3 border-2 border-blue-600 text-blue-600 rounded-2xl font-medium hover:bg-blue-50 active:scale-95 transition-all flex items-center justify-center gap-2">
+            📋 העתק מתנות שנמכרו באירוע
+          </button>
+          {recs.length > 0 && (
+            <div className="bg-red-50 border border-red-200 rounded-2xl p-4">
+              <div className="flex items-center gap-2 mb-2">
+                <span>🛒</span><span className="font-bold text-red-800">המלצת הזמנה</span>
+              </div>
+              {recs.map(r => (
+                <p key={r.id} className="text-sm text-red-700 mb-1">
+                  {r.name} — יש {r.currentInventory}, מינימום {r.minStockLevel} → הזמן {r.order} יחידות
+                </p>
+              ))}
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    function SummaryRow({ label, value, bold }) {
+      return (
+        <div className={`flex justify-between px-4 py-3 ${bold ? 'font-bold text-blue-700 text-lg' : 'text-gray-700'}`}>
+          <span dangerouslySetInnerHTML={{__html: label}} />
+          <span>{value}</span>
+        </div>
+      );
+    }
+
+    // ──────────────────────────────────────────────
+    // INVENTORY SCREEN
+    // ──────────────────────────────────────────────
+    function InventoryScreen({ nav }) {
+      const [tab, setTab]      = useState(0);
+      const [gts, setGts]      = useState(() => LS.get('giftTypes', []));
+      const [purs, setPurs]    = useState(() => LS.get('purchases', []));
+      const [counts, setCounts]= useState(() => LS.get('inventoryCounts', []));
+      const [showPur, setShowPur] = useState(false);
+
+      const refresh = () => { setGts(LS.get('giftTypes',[])); setPurs(LS.get('purchases',[])); setCounts(LS.get('inventoryCounts',[])); };
+
+      const recordPurchase = (giftTypeId, giftTypeName, qty, notes) => {
+        LS.set('purchases', [...LS.get('purchases',[]), { id:genId(), giftTypeId, giftTypeName, quantity:qty, notes, purchaseDate:Date.now() }]);
+        LS.set('giftTypes', LS.get('giftTypes',[]).map(gt => gt.id===giftTypeId ? {...gt, currentInventory: gt.currentInventory+qty} : gt));
+        refresh(); setShowPur(false);
+      };
+
+      const delPurchase = (p) => {
+        LS.set('purchases', LS.get('purchases',[]).filter(x=>x.id!==p.id));
+        LS.set('giftTypes', LS.get('giftTypes',[]).map(gt => gt.id===p.giftTypeId ? {...gt, currentInventory: Math.max(0,gt.currentInventory-p.quantity)} : gt));
+        refresh();
+      };
+
+      const startCount = () => {
+        const giftTypes = LS.get('giftTypes', []);
+        const countId   = genId();
+        const snap      = JSON.stringify(Object.fromEntries(giftTypes.map(gt=>[gt.id, gt.currentInventory])));
+        LS.set('inventoryCounts', [...LS.get('inventoryCounts',[]), { id:countId, countDate:Date.now(), isApproved:false, snapshotJson:snap }]);
+        const items = giftTypes.map(gt => ({ id:genId(), countId, giftTypeId:gt.id, giftTypeName:gt.name, systemQuantity:gt.currentInventory, countedQuantity:gt.currentInventory }));
+        LS.set('countItems', [...LS.get('countItems',[]), ...items]);
+        nav('inventoryCount', { countId });
+      };
+
+      const delCount = (countId) => {
+        const c = counts.find(x=>x.id===countId);
+        if (c?.isApproved) {
+          const snap = JSON.parse(c.snapshotJson||'{}');
+          LS.set('giftTypes', LS.get('giftTypes',[]).map(gt => snap[gt.id]!==undefined ? {...gt, currentInventory:parseInt(snap[gt.id])} : gt));
+        }
+        LS.set('inventoryCounts', LS.get('inventoryCounts',[]).filter(x=>x.id!==countId));
+        LS.set('countItems',      LS.get('countItems',[]).filter(x=>x.countId!==countId));
+        refresh();
+      };
+
+      const exportCSV = () => {
+        const rows = [['מתנה','מלאי נוכחי','מינימום','מחיר ברירת מחדל']];
+        gts.forEach(gt => rows.push([gt.name, gt.currentInventory, gt.minStockLevel, gt.defaultUnitPrice]));
+        dlBlob('﻿'+rows.map(r=>r.map(c=>`"${c}"`).join(',')).join('\n'), 'inventory.csv', 'text/csv;charset=utf-8');
+      };
+
+      const tabs = ['מלאי נוכחי','רכישות','ספירות מלאי'];
+
+      return (
+        <div className="flex flex-col h-full">
+          <TopBar title="מלאי" right={<div className="flex gap-1"><IconBtn icon="⬇️" onClick={exportCSV} /><IconBtn icon="⚙️" onClick={()=>nav('giftTypes')} /></div>} />
+          <div className="flex border-b bg-white shrink-0">
+            {tabs.map((t,i)=>(
+              <button key={i} onClick={()=>setTab(i)} className={`flex-1 py-2.5 text-sm font-medium transition-colors ${tab===i?'border-b-2 border-blue-600 text-blue-600':'text-gray-400'}`}>{t}</button>
+            ))}
+          </div>
+          <div className="flex-1 overflow-y-auto pb-20">
+            {tab===0 && <StockTab gts={gts} />}
+            {tab===1 && <PurchasesTab purs={purs} onDelete={delPurchase} />}
+            {tab===2 && <CountsTab counts={counts} onClick={id=>nav('inventoryCount',{countId:id})} onDelete={delCount} />}
+          </div>
+          {tab===0 && <FAB icon="🛒" onClick={()=>setShowPur(true)} bottom="bottom-20" />}
+          {tab===2 && <FAB icon="📊" onClick={startCount} bottom="bottom-20" />}
+          {showPur && <PurchaseDialog gts={gts} onRecord={recordPurchase} onClose={()=>setShowPur(false)} />}
+        </div>
+      );
+    }
+
+    function StockTab({ gts }) {
+      return (
+        <div className="p-3 space-y-2">
+          {gts.map(gt => {
+            const low = gt.minStockLevel>0 && gt.currentInventory<gt.minStockLevel;
+            return (
+              <div key={gt.id} className={`rounded-2xl p-4 flex items-center justify-between ${low?'bg-red-50 border border-red-200':'bg-white border border-gray-100 shadow-sm'}`}>
+                <div>
+                  <p className="font-bold text-gray-800">{gt.name}</p>
+                  {gt.minStockLevel>0 && <p className={`text-xs ${low?'text-red-500':'text-gray-400'}`}>מינימום: {gt.minStockLevel}</p>}
+                </div>
+                <div className="flex items-baseline gap-1">
+                  <span className={`text-3xl font-bold ${low?'text-red-600':'text-blue-600'}`}>{gt.currentInventory}</span>
+                  <span className="text-sm text-gray-400">יח'</span>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      );
+    }
+
+    function PurchasesTab({ purs, onDelete }) {
+      const [del, setDel] = useState(null);
+      const sorted = [...purs].sort((a,b)=>b.purchaseDate-a.purchaseDate);
+      return (
+        <div className="p-3 space-y-2">
+          {!sorted.length && <EmptyState icon="🛒" title="אין רכישות עדיין" />}
+          {sorted.map(p=>(
+            <div key={p.id} className="bg-white rounded-2xl border border-gray-100 shadow-sm p-4 flex items-center gap-3">
+              <div className="flex-1">
+                <p className="font-bold text-gray-800">{p.giftTypeName}</p>
+                <p className="text-xs text-gray-400">{fmtFull(p.purchaseDate)}</p>
+                {p.notes && <p className="text-sm text-gray-500 mt-0.5">{p.notes}</p>}
+              </div>
+              <span className="text-2xl font-bold text-green-500">+{p.quantity}</span>
+              <button onClick={()=>setDel(p)} className="text-red-300 hover:text-red-500 text-lg">🗑️</button>
+            </div>
+          ))}
+          {del && <Confirm title="מחיקת רכישה" msg={`למחוק רכישה של ${del.quantity} ${del.giftTypeName}? המלאי יוחזר.`} onOk={()=>{onDelete(del);setDel(null);}} onCancel={()=>setDel(null)} />}
+        </div>
+      );
+    }
+
+    function CountsTab({ counts, onClick, onDelete }) {
+      const [del, setDel] = useState(null);
+      const sorted = [...counts].sort((a,b)=>b.countDate-a.countDate);
+      return (
+        <div className="p-3 space-y-2">
+          {!sorted.length && <EmptyState icon="📊" title="אין ספירות מלאי" />}
+          {sorted.map(c=>(
+            <div key={c.id} className="bg-white rounded-2xl border border-gray-100 shadow-sm p-4 flex items-center gap-2 cursor-pointer active:bg-gray-50" onClick={()=>onClick(c.id)}>
+              <div className="flex-1">
+                <p className="font-bold text-gray-800">ספירת מלאי {fmtFull(c.countDate)}</p>
+                <p className={`text-sm ${c.isApproved?'text-green-600':'text-gray-400'}`}>{c.isApproved?'✓ מאושר':'טיוטה'}</p>
+              </div>
+              <button onClick={e=>{e.stopPropagation();setDel(c);}} className="text-red-300 hover:text-red-500 text-lg">🗑️</button>
+            </div>
+          ))}
+          {del && <Confirm title="מחיקת ספירת מלאי" msg={del.isApproved?'מחיקת ספירה מאושרת תחזיר את המלאי למצב לפני הספירה.':'למחוק את טיוטת הספירה?'} onOk={()=>{onDelete(del.id);setDel(null);}} onCancel={()=>setDel(null)} />}
+        </div>
+      );
+    }
+
+    function PurchaseDialog({ gts, onRecord, onClose }) {
+      const [selId, setSel] = useState(null);
+      const [qty, setQty]   = useState('1');
+      const [notes, setNotes]= useState('');
+      const go = () => { const gt=gts.find(g=>g.id===selId); if(gt) onRecord(gt.id, gt.name, parseInt(qty)||0, notes.trim()||null); };
+      return (
+        <Sheet onClose={onClose}>
+          <h2 className="text-lg font-bold mb-4">רישום רכישה</h2>
+          <p className="text-sm font-medium text-gray-600 mb-2">בחר מוצר:</p>
+          <div className="flex flex-wrap gap-2 mb-4">
+            {gts.map(gt=>(
+              <button key={gt.id} onClick={()=>setSel(gt.id)}
+                className={`px-3 py-1.5 rounded-full text-sm border transition-all ${selId===gt.id?'bg-blue-600 text-white border-blue-600':'border-gray-300 hover:border-blue-400'}`}>
+                {gt.name}
+              </button>
+            ))}
+          </div>
+          <div className="space-y-3">
+            <div><label className="text-sm font-medium text-gray-700">כמות שנרכשה</label>
+              <input type="number" value={qty} onChange={e=>setQty(e.target.value)} min="1"
+                className="w-full border rounded-xl px-3 py-2 mt-1 focus:outline-none focus:ring-2 focus:ring-blue-400" /></div>
+            <div><label className="text-sm font-medium text-gray-700">הערות (אופציונלי)</label>
+              <input type="text" value={notes} onChange={e=>setNotes(e.target.value)}
+                className="w-full border rounded-xl px-3 py-2 mt-1 text-right focus:outline-none focus:ring-2 focus:ring-blue-400" /></div>
+          </div>
+          <div className="flex gap-2 mt-5">
+            <button onClick={go} disabled={!selId||!(parseInt(qty)>0)}
+              className="flex-1 py-3 bg-blue-600 text-white rounded-xl font-medium disabled:opacity-40 hover:bg-blue-700 active:scale-95 transition-all">שמור רכישה</button>
+            <button onClick={onClose} className="flex-1 py-3 border rounded-xl font-medium hover:bg-gray-50">ביטול</button>
+          </div>
+        </Sheet>
+      );
+    }
+
+    // ──────────────────────────────────────────────
+    // INVENTORY COUNT SCREEN
+    // ──────────────────────────────────────────────
+    function InventoryCountScreen({ countId, onBack }) {
+      const [count, setCount] = useState(() => LS.get('inventoryCounts',[]).find(c=>c.id===countId));
+      const [items, setItems] = useState(() => LS.get('countItems',[]).filter(i=>i.countId===countId));
+      const [qtys, setQtys]   = useState(() => {
+        const m={};
+        LS.get('countItems',[]).filter(i=>i.countId===countId).forEach(i=>{m[i.id]=String(i.countedQuantity);});
+        return m;
+      });
+      const [showApp, setShowApp] = useState(false);
+      const [showDel, setShowDel] = useState(false);
+
+      const updateQty = (itemId, val) => {
+        setQtys(q=>({...q,[itemId]:val}));
+        const n = parseInt(val)||0;
+        LS.set('countItems', LS.get('countItems',[]).map(i=>i.id===itemId?{...i,countedQuantity:n}:i));
+      };
+
+      const approve = () => {
+        const all = LS.get('countItems',[]).filter(i=>i.countId===countId);
+        LS.set('giftTypes', LS.get('giftTypes',[]).map(gt=>{
+          const it=all.find(i=>i.giftTypeId===gt.id);
+          return it?{...gt,currentInventory:it.countedQuantity}:gt;
+        }));
+        LS.set('inventoryCounts', LS.get('inventoryCounts',[]).map(c=>c.id===countId?{...c,isApproved:true}:c));
+        setCount(c=>({...c,isApproved:true}));
+        setShowApp(false);
+      };
+
+      const doDelete = () => {
+        if (count?.isApproved) {
+          const snap = JSON.parse(count.snapshotJson||'{}');
+          LS.set('giftTypes', LS.get('giftTypes',[]).map(gt=>snap[gt.id]!==undefined?{...gt,currentInventory:parseInt(snap[gt.id])}:gt));
+        }
+        LS.set('inventoryCounts', LS.get('inventoryCounts',[]).filter(c=>c.id!==countId));
+        LS.set('countItems',      LS.get('countItems',[]).filter(i=>i.countId!==countId));
+        onBack();
+      };
+
+      const approved = count?.isApproved;
+
+      return (
+        <div className="flex flex-col h-full">
+          <TopBar
+            title={<span className="text-sm font-medium">ספירת מלאי{count?` — ${fmtFull(count.countDate)}`:''}</span>}
+            left={<IconBtn icon="←" onClick={onBack} />}
+            right={<IconBtn icon="🗑️" onClick={()=>setShowDel(true)} />}
+          />
+          {approved && (
+            <div className="bg-green-50 border-b border-green-200 px-4 py-2 flex items-center gap-2 shrink-0">
+              <span className="text-green-600">✓</span>
+              <span className="text-green-700 font-medium text-sm">ספירה מאושרת</span>
+            </div>
+          )}
+          <div className="flex text-xs font-semibold text-gray-400 px-3 py-2 bg-gray-50 border-b shrink-0">
+            <span className="flex-[2]">מוצר</span>
+            <span className="flex-1 text-center">במערכת</span>
+            <span className="flex-[1.2] text-center">בספירה</span>
+            <span className="flex-1 text-center">הפרש</span>
+          </div>
+          <div className="flex-1 overflow-y-auto">
+            {items.map(item => {
+              const edited = qtys[item.id] ?? String(item.countedQuantity);
+              const cnt    = parseInt(edited)||0;
+              const diff   = cnt - item.systemQuantity;
+              const dc     = diff>0?'text-green-600':diff<0?'text-red-600':'text-gray-400';
+              return (
+                <div key={item.id} className="flex items-center px-3 py-3 border-b hover:bg-gray-50">
+                  <span className="flex-[2] text-sm text-gray-800">{item.giftTypeName}</span>
+                  <span className="flex-1 text-center text-sm text-gray-500">{item.systemQuantity}</span>
+                  {approved
+                    ? <span className="flex-[1.2] text-center text-sm">{item.countedQuantity}</span>
+                    : <input type="number" value={edited} onChange={e=>updateQty(item.id,e.target.value)}
+                        className="flex-[1.2] mx-1 border rounded-lg px-2 py-1.5 text-center text-sm focus:outline-none focus:ring-1 focus:ring-blue-400" />
+                  }
+                  <span className={`flex-1 text-center text-sm font-bold ${dc}`}>{diff>=0?`+${diff}`:diff}</span>
+                </div>
+              );
+            })}
+          </div>
+          {!approved && (
+            <div className="p-4 border-t shrink-0">
+              <button onClick={()=>setShowApp(true)} className="w-full py-3 bg-green-600 text-white rounded-2xl font-bold hover:bg-green-700 active:scale-95 transition-all">
+                ✓ אשר ספירה ועדכן מלאי
+              </button>
+            </div>
+          )}
+          {showApp && <Confirm title="אישור ספירת מלאי" msg="לאשר את הספירה? המלאי יעודכן לפי הכמויות שנספרו." okText="אשר" onOk={approve} onCancel={()=>setShowApp(false)} />}
+          {showDel && <Confirm title="מחיקת ספירת מלאי" msg={approved?'מחיקת ספירה מאושרת תחזיר את המלאי למצב לפני הספירה. להמשיך?':'למחוק את טיוטת הספירה?'} onOk={doDelete} onCancel={()=>setShowDel(false)} />}
+        </div>
+      );
+    }
+
+    // ──────────────────────────────────────────────
+    // GIFT TYPES MANAGEMENT
+    // ──────────────────────────────────────────────
+    function GiftTypesScreen({ onBack }) {
+      const [gts, setGts]     = useState(() => LS.get('giftTypes', []));
+      const [showAdd, setAdd] = useState(false);
+      const [delGt, setDel]   = useState(null);
+
+      const refresh = () => setGts(LS.get('giftTypes', []));
+
+      const updateGt = (updated) => { LS.set('giftTypes', LS.get('giftTypes',[]).map(gt=>gt.id===updated.id?updated:gt)); };
+      const setInv   = (id, qty) => { LS.set('giftTypes', LS.get('giftTypes',[]).map(gt=>gt.id===id?{...gt,currentInventory:qty}:gt)); };
+      const addGt    = (name,price,min,order) => { LS.set('giftTypes',[...LS.get('giftTypes',[]),{id:genId(),name,defaultUnitPrice:price,isDefault:false,sortOrder:999,currentInventory:0,minStockLevel:min,minOrderQuantity:order}]); refresh(); setAdd(false); };
+      const delConfirm = () => { LS.set('giftTypes',LS.get('giftTypes',[]).filter(g=>g.id!==delGt.id)); refresh(); setDel(null); };
+
+      return (
+        <div className="flex flex-col h-full">
+          <TopBar title="סוגי מתנות" left={<IconBtn icon="←" onClick={onBack} />} />
+          <div className="flex-1 overflow-y-auto p-3 space-y-3 pb-24">
+            {gts.map(gt=>(
+              <GiftTypeRow key={gt.id} gt={gt}
+                onUpdate={u=>{updateGt(u);refresh();}}
+                onSetInv={(q)=>{setInv(gt.id,q);refresh();}}
+                onDelete={!gt.isDefault?()=>setDel(gt):null} />
+            ))}
+          </div>
+          <FAB icon="+" onClick={()=>setAdd(true)} bottom="bottom-4" />
+          {showAdd && <AddGiftTypeDialog onAdd={addGt} onClose={()=>setAdd(false)} />}
+          {delGt   && <Confirm title="מחיקת מתנה" msg={`למחוק את "${delGt.name}"?`} onOk={delConfirm} onCancel={()=>setDel(null)} />}
+        </div>
+      );
+    }
+
+    function GiftTypeRow({ gt, onUpdate, onSetInv, onDelete }) {
+      const [price, setPrice] = useState(String(gt.defaultUnitPrice));
+      const [min,   setMin]   = useState(String(gt.minStockLevel));
+      const [order, setOrder] = useState(String(gt.minOrderQuantity));
+      const [inv,   setInv]   = useState(String(gt.currentInventory));
+      return (
+        <div className="bg-white rounded-2xl border border-gray-200 p-4 shadow-sm">
+          <div className="flex justify-between items-center mb-3">
+            <span className="font-bold text-gray-800">{gt.name}</span>
+            {onDelete && <button onClick={onDelete} className="text-red-300 hover:text-red-500 text-lg">🗑️</button>}
+          </div>
+          <div className="grid grid-cols-2 gap-2">
+            {[
+              {label:'מחיר ברירת מחדל (₪)', val:price, set:setPrice, cb:v=>onUpdate({...gt,defaultUnitPrice:parseFloat(v)||0})},
+              {label:'מלאי נוכחי',           val:inv,   set:setInv,   cb:v=>onSetInv(parseInt(v)||0)},
+              {label:'מלאי מינימום',         val:min,   set:setMin,   cb:v=>onUpdate({...gt,minStockLevel:parseInt(v)||0})},
+              {label:"כמות הזמנה מינ'",      val:order, set:setOrder, cb:v=>onUpdate({...gt,minOrderQuantity:parseInt(v)||1})},
+            ].map(f=>(
+              <div key={f.label}>
+                <label className="text-xs text-gray-400 block mb-1">{f.label}</label>
+                <input type="number" value={f.val} onChange={e=>{f.set(e.target.value);f.cb(e.target.value);}}
+                  className="w-full border rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-blue-400" />
+              </div>
+            ))}
+          </div>
+        </div>
+      );
+    }
+
+    function AddGiftTypeDialog({ onAdd, onClose }) {
+      const [name, setName]   = useState('');
+      const [price, setPrice] = useState('');
+      const [min, setMin]     = useState('0');
+      const [order, setOrder] = useState('1');
+      return (
+        <Sheet onClose={onClose}>
+          <h2 className="text-lg font-bold mb-4">הוסף סוג מתנה</h2>
+          <div className="space-y-3">
+            <input type="text" value={name} onChange={e=>setName(e.target.value)} placeholder="שם המתנה"
+              className="w-full border rounded-xl px-3 py-2 text-right focus:outline-none focus:ring-2 focus:ring-blue-400" />
+            <input type="number" value={price} onChange={e=>setPrice(e.target.value)} placeholder="מחיר ברירת מחדל (₪)"
+              className="w-full border rounded-xl px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-400" />
+            <div className="grid grid-cols-2 gap-2">
+              <input type="number" value={min}   onChange={e=>setMin(e.target.value)}   placeholder="מלאי מינימום" className="border rounded-xl px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-400" />
+              <input type="number" value={order} onChange={e=>setOrder(e.target.value)} placeholder="כמות הזמנה"   className="border rounded-xl px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-400" />
+            </div>
+          </div>
+          <div className="flex gap-2 mt-5">
+            <button onClick={()=>{if(name.trim())onAdd(name.trim(),parseFloat(price)||0,parseInt(min)||0,parseInt(order)||1);}}
+              disabled={!name.trim()} className="flex-1 py-3 bg-blue-600 text-white rounded-xl font-medium disabled:opacity-40 hover:bg-blue-700 active:scale-95 transition-all">הוסף</button>
+            <button onClick={onClose} className="flex-1 py-3 border rounded-xl font-medium hover:bg-gray-50">ביטול</button>
+          </div>
+        </Sheet>
+      );
+    }
+
+    // ──────────────────────────────────────────────
+    // SHARED UI COMPONENTS
+    // ──────────────────────────────────────────────
+    function TopBar({ title, left, right }) {
+      return (
+        <div className="bg-blue-600 text-white px-3 py-3 flex items-center gap-2 shrink-0 shadow-md">
+          {left  && <div className="shrink-0">{left}</div>}
+          <div className="flex-1 font-bold text-base truncate">{title}</div>
+          {right && <div className="shrink-0">{right}</div>}
+        </div>
+      );
+    }
+
+    function IconBtn({ icon, onClick }) {
+      return (
+        <button onClick={onClick} className="w-9 h-9 flex items-center justify-center rounded-xl hover:bg-blue-700 active:bg-blue-800 transition-colors text-lg">
+          {icon}
+        </button>
+      );
+    }
+
+    function FAB({ icon, onClick, bottom }) {
+      return (
+        <button onClick={onClick} className={`fixed ${bottom} right-4 w-14 h-14 bg-blue-600 text-white rounded-full shadow-lg flex items-center justify-center text-2xl hover:bg-blue-700 active:scale-95 transition-all z-30`}>
+          {icon}
+        </button>
+      );
+    }
+
+    function EmptyState({ icon, title, sub }) {
+      return (
+        <div className="flex flex-col items-center justify-center h-48 text-gray-400 gap-2">
+          <span className="text-5xl">{icon}</span>
+          <p className="text-base font-medium">{title}</p>
+          {sub && <p className="text-sm">{sub}</p>}
+        </div>
+      );
+    }
+
+    function Sheet({ children, onClose }) {
+      return (
+        <div className="fixed inset-0 bg-black/50 flex items-end justify-center z-50" onClick={onClose}>
+          <div className="bg-white rounded-t-3xl w-full max-w-lg p-6 max-h-[85vh] overflow-y-auto" onClick={e=>e.stopPropagation()}>
+            {children}
+          </div>
+        </div>
+      );
+    }
+
+    function Confirm({ title, msg, onOk, onCancel, okText='מחק' }) {
+      return (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-3xl p-6 w-full max-w-sm shadow-2xl">
+            <h3 className="text-lg font-bold mb-2 text-gray-900">{title}</h3>
+            <p className="text-gray-500 text-sm mb-5">{msg}</p>
+            <div className="flex gap-2">
+              <button onClick={onCancel} className="flex-1 py-2.5 border-2 rounded-xl font-medium hover:bg-gray-50 active:scale-95 transition-all">ביטול</button>
+              <button onClick={onOk}     className="flex-1 py-2.5 bg-red-500 text-white rounded-xl font-medium hover:bg-red-600 active:scale-95 transition-all">{okText}</button>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    // ──────────────────────────────────────────────
+    // HELPERS
+    // ──────────────────────────────────────────────
+    function copyText(txt) {
+      if (navigator.clipboard) { navigator.clipboard.writeText(txt).then(()=>alert('הועתק ללוח!')).catch(()=>fallbackCopy(txt)); }
+      else fallbackCopy(txt);
+    }
+    function fallbackCopy(txt) {
+      const ta = document.createElement('textarea'); ta.value=txt;
+      ta.style.cssText='position:fixed;opacity:0'; document.body.appendChild(ta);
+      ta.select(); document.execCommand('copy'); document.body.removeChild(ta);
+      alert('הועתק ללוח!');
+    }
+    function dlBlob(content, name, type) {
+      const blob = new Blob([content],{type}); const url=URL.createObjectURL(blob);
+      const a=document.createElement('a'); a.href=url; a.download=name; a.click(); URL.revokeObjectURL(url);
+    }
+
+    // ──────────────────────────────────────────────
+    // RENDER
+    // ──────────────────────────────────────────────
+    ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+  </script>
+</body>
+</html>
