@@ -290,7 +290,10 @@
         if (prevEvent) {
           categories = [...(prevEvent.categories ?? LS.get('categories', []))];
           const prevExpenses = LS.get('expenses', []).filter(e => e.eventId === prevEvent.id);
-          newExpenses = prevExpenses.map(e => ({ id: genId(), eventId: id, categoryName: e.categoryName, amount: e.amount }));
+          newExpenses = prevExpenses.map(e => ({
+            id: genId(), eventId: id, categoryName: e.categoryName, amount: e.amount,
+            ...(e.fuelKm !== undefined ? { fuelKm: e.fuelKm, fuelPricePerKm: e.fuelPricePerKm } : {})
+          }));
         } else {
           categories = [...LS.get('categories', [])];
         }
@@ -454,11 +457,11 @@
         LS.set('events', LS.get('events', []).map(e => e.id === eventId ? { ...e, categories: updatedList } : e));
       };
 
-      const upsertExpense = (catName, amount) => {
+      const upsertExpense = (catName, amount, extraData = {}) => {
         const all  = LS.get('expenses', []);
         const idx  = all.findIndex(e => e.eventId === eventId && e.categoryName === catName);
-        if (idx >= 0) all[idx] = { ...all[idx], amount };
-        else all.push({ id: genId(), eventId, categoryName: catName, amount });
+        if (idx >= 0) all[idx] = { ...all[idx], amount, ...extraData };
+        else all.push({ id: genId(), eventId, categoryName: catName, amount, ...extraData });
         LS.set('expenses', all);
         refreshExps();
       };
@@ -469,6 +472,13 @@
         const updated = [...current, { id: genId(), name: newCat.trim(), isDefault: false, sortOrder: current.length }];
         saveEventCats(updated);
         refreshCats(); setNewCat(''); setAdding(false);
+      };
+
+      const addFuelCategory = () => {
+        const current = getEventCats();
+        const updated = [...current, { id: genId(), name: 'דלק', isFuel: true, isDefault: false, sortOrder: current.length }];
+        saveEventCats(updated);
+        refreshCats();
       };
 
       const deleteCategory = (cat) => {
@@ -489,12 +499,24 @@
       };
 
       const expMap = {};
-      exps.forEach(e => { expMap[e.categoryName] = e.amount; });
+      const fuelMap = {};
+      exps.forEach(e => {
+        expMap[e.categoryName] = e.amount;
+        if (e.fuelKm !== undefined) fuelMap[e.categoryName] = { km: e.fuelKm, pricePerKm: e.fuelPricePerKm };
+      });
       const total = exps.reduce((s,e) => s + e.amount, 0);
 
       return (
         <div className="pb-4">
-          {cats.map(cat => (
+          {cats.map(cat => cat.isFuel ? (
+            <FuelRow key={cat.id} categoryName={cat.name}
+              initialKm={fuelMap[cat.name]?.km ?? 0}
+              initialPricePerKm={fuelMap[cat.name]?.pricePerKm ?? 0}
+              onFuelChange={(km, pricePerKm, total) => upsertExpense(cat.name, total, { fuelKm: km, fuelPricePerKm: pricePerKm })}
+              onDelete={() => setDelCat(cat)}
+              onRename={newName => renameCategory(cat, newName)}
+            />
+          ) : (
             <ExpenseRow key={cat.id} categoryName={cat.name}
               initialAmount={expMap[cat.name] || 0}
               onAmountChange={amt => upsertExpense(cat.name, amt)}
@@ -514,9 +536,14 @@
                 <button onClick={addCategory} className="bg-blue-600 text-white px-4 rounded-xl text-sm hover:bg-blue-700">הוסף</button>
                 <button onClick={()=>setAdding(false)} className="border px-3 rounded-xl text-sm hover:bg-gray-50">ביטול</button>
               </div>
-            : <button onClick={()=>setAdding(true)} className="w-full py-3 text-blue-600 border-t flex items-center justify-center gap-2 hover:bg-blue-50 text-sm">
-                <span className="text-lg">+</span> הוסף קטגוריה
-              </button>
+            : <div className="flex border-t divide-x divide-x-reverse">
+                <button onClick={()=>setAdding(true)} className="flex-1 py-3 text-blue-600 flex items-center justify-center gap-1 hover:bg-blue-50 text-sm">
+                  <span className="text-lg">+</span> הוסף קטגוריה
+                </button>
+                <button onClick={addFuelCategory} className="flex-1 py-3 text-orange-500 flex items-center justify-center gap-1 hover:bg-orange-50 text-sm">
+                  <span>⛽</span> הוסף חישוב דלק
+                </button>
+              </div>
           }
           {delCat && <Confirm title="מחיקת קטגוריה" msg={`למחוק את "${delCat.name}"?`} okText="מחק" onOk={() => deleteCategory(delCat)} onCancel={() => setDelCat(null)} />}
         </div>
@@ -558,6 +585,71 @@
             <span className="px-2 text-gray-400 bg-gray-50 border-l py-2 text-sm">₪</span>
             <input type="number" value={val} onChange={e=>{setVal(e.target.value);onAmountChange(parseFloat(e.target.value)||0);}}
               placeholder="0" className="w-24 px-2 py-2 text-left focus:outline-none text-sm" />
+          </div>
+        </div>
+      );
+    }
+
+    function FuelRow({ categoryName, initialKm, initialPricePerKm, onFuelChange, onDelete, onRename }) {
+      const [km,    setKm]    = useState(initialKm === 0 ? '' : String(initialKm));
+      const [price, setPrice] = useState(initialPricePerKm === 0 ? '' : String(initialPricePerKm));
+      const [editingName, setEditing] = useState(false);
+      const [nameVal, setNameVal]     = useState(categoryName);
+
+      useEffect(() => { setKm(initialKm === 0 ? '' : String(initialKm)); }, [initialKm]);
+      useEffect(() => { setPrice(initialPricePerKm === 0 ? '' : String(initialPricePerKm)); }, [initialPricePerKm]);
+      useEffect(() => { setNameVal(categoryName); }, [categoryName]);
+
+      const commitRename = () => {
+        const trimmed = nameVal.trim();
+        if (trimmed && trimmed !== categoryName) onRename(trimmed);
+        else setNameVal(categoryName);
+        setEditing(false);
+      };
+
+      const handleChange = (newKm, newPrice) => {
+        const k = parseFloat(newKm) || 0;
+        const p = parseFloat(newPrice) || 0;
+        onFuelChange(k, p, k * p);
+      };
+
+      const total = (parseFloat(km) || 0) * (parseFloat(price) || 0);
+
+      return (
+        <div className="border-b bg-orange-50 px-3 py-2">
+          <div className="flex items-center gap-2 mb-2">
+            <button onClick={onDelete} className="text-red-300 hover:text-red-500 text-lg transition-colors">🗑️</button>
+            <span className="text-lg">⛽</span>
+            {editingName ? (
+              <input autoFocus value={nameVal}
+                onChange={e => setNameVal(e.target.value)}
+                onBlur={commitRename}
+                onKeyDown={e => { if (e.key === 'Enter') commitRename(); if (e.key === 'Escape') { setNameVal(categoryName); setEditing(false); } }}
+                className="flex-1 border rounded-xl px-2 py-1 text-right focus:outline-none focus:ring-2 focus:ring-orange-400 text-sm" />
+            ) : (
+              <span className="flex-1 text-gray-800 text-sm font-medium cursor-pointer hover:text-orange-600" onClick={() => setEditing(true)} title="לחץ לעריכת שם">{categoryName}</span>
+            )}
+            <span className="text-orange-700 font-bold text-sm">{fmt(total)}</span>
+          </div>
+          <div className="flex gap-2 pr-8">
+            <div className="flex-1">
+              <label className="text-xs text-gray-500 block mb-1">ק"מ</label>
+              <input type="number" value={km} placeholder="0"
+                onChange={e => { setKm(e.target.value); handleChange(e.target.value, price); }}
+                className="w-full border rounded-xl px-3 py-2 text-left focus:outline-none focus:ring-2 focus:ring-orange-400 text-sm bg-white" />
+            </div>
+            <div className="flex items-end pb-0.5 text-gray-400 text-sm">×</div>
+            <div className="flex-1">
+              <label className="text-xs text-gray-500 block mb-1">₪ לק"מ</label>
+              <input type="number" value={price} placeholder="0"
+                onChange={e => { setPrice(e.target.value); handleChange(km, e.target.value); }}
+                className="w-full border rounded-xl px-3 py-2 text-left focus:outline-none focus:ring-2 focus:ring-orange-400 text-sm bg-white" />
+            </div>
+            <div className="flex items-end pb-0.5 text-gray-400 text-sm">=</div>
+            <div className="flex-1 flex flex-col justify-end">
+              <label className="text-xs text-gray-500 block mb-1">סה"כ</label>
+              <div className="w-full border border-orange-200 rounded-xl px-3 py-2 text-sm font-bold text-orange-700 bg-orange-100 text-left">{total.toFixed(0)}</div>
+            </div>
           </div>
         </div>
       );
