@@ -279,8 +279,27 @@
 
       const createEvent = () => {
         const id = genId();
-        const ev = { id, name: '', location: '', date: Date.now(), createdAt: Date.now(), categories: [...LS.get('categories', [])] };
-        LS.set('events', [ev, ...LS.get('events', [])]);
+        const existingEvents = LS.get('events', []);
+        const prevEvent = existingEvents.length > 0
+          ? [...existingEvents].sort((a,b) => b.date - a.date)[0]
+          : null;
+
+        let categories;
+        let newExpenses = [];
+
+        if (prevEvent) {
+          categories = [...(prevEvent.categories ?? LS.get('categories', []))];
+          const prevExpenses = LS.get('expenses', []).filter(e => e.eventId === prevEvent.id);
+          newExpenses = prevExpenses.map(e => ({ id: genId(), eventId: id, categoryName: e.categoryName, amount: e.amount }));
+        } else {
+          categories = [...LS.get('categories', [])];
+        }
+
+        const ev = { id, name: '', location: '', date: Date.now(), createdAt: Date.now(), categories };
+        LS.set('events', [ev, ...existingEvents]);
+        if (newExpenses.length > 0) {
+          LS.set('expenses', [...LS.get('expenses', []), ...newExpenses]);
+        }
         nav('eventDetail', { eventId: id });
       };
 
@@ -458,6 +477,17 @@
         refreshCats(); setDelCat(null);
       };
 
+      const renameCategory = (cat, newName) => {
+        const updated = getEventCats().map(c => c.id === cat.id ? { ...c, name: newName } : c);
+        saveEventCats(updated);
+        const updatedExps = LS.get('expenses', []).map(e =>
+          e.eventId === eventId && e.categoryName === cat.name ? { ...e, categoryName: newName } : e
+        );
+        LS.set('expenses', updatedExps);
+        refreshCats();
+        refreshExps();
+      };
+
       const expMap = {};
       exps.forEach(e => { expMap[e.categoryName] = e.amount; });
       const total = exps.reduce((s,e) => s + e.amount, 0);
@@ -469,6 +499,7 @@
               initialAmount={expMap[cat.name] || 0}
               onAmountChange={amt => upsertExpense(cat.name, amt)}
               onDelete={() => setDelCat(cat)}
+              onRename={newName => renameCategory(cat, newName)}
             />
           ))}
           <div className="px-4 py-3 border-t bg-blue-50 flex justify-between font-bold">
@@ -492,13 +523,37 @@
       );
     }
 
-    function ExpenseRow({ categoryName, initialAmount, onAmountChange, onDelete }) {
-      const [val, setVal] = useState(initialAmount === 0 ? '' : String(initialAmount));
+    function ExpenseRow({ categoryName, initialAmount, onAmountChange, onDelete, onRename }) {
+      const [val, setVal]             = useState(initialAmount === 0 ? '' : String(initialAmount));
+      const [editingName, setEditing] = useState(false);
+      const [nameVal, setNameVal]     = useState(categoryName);
+
       useEffect(() => { setVal(initialAmount === 0 ? '' : String(initialAmount)); }, [initialAmount]);
+      useEffect(() => { setNameVal(categoryName); }, [categoryName]);
+
+      const commitRename = () => {
+        const trimmed = nameVal.trim();
+        if (trimmed && trimmed !== categoryName) onRename(trimmed);
+        else setNameVal(categoryName);
+        setEditing(false);
+      };
+
       return (
         <div className="flex items-center px-3 py-2 border-b hover:bg-gray-50 gap-2">
           <button onClick={onDelete} className="text-red-300 hover:text-red-500 text-lg transition-colors">🗑️</button>
-          <span className="flex-1 text-gray-800 text-sm">{categoryName}</span>
+          {editingName ? (
+            <input autoFocus value={nameVal}
+              onChange={e => setNameVal(e.target.value)}
+              onBlur={commitRename}
+              onKeyDown={e => { if (e.key === 'Enter') commitRename(); if (e.key === 'Escape') { setNameVal(categoryName); setEditing(false); } }}
+              className="flex-1 border rounded-xl px-2 py-1 text-right focus:outline-none focus:ring-2 focus:ring-blue-400 text-sm" />
+          ) : (
+            <span
+              className="flex-1 text-gray-800 text-sm cursor-pointer hover:text-blue-600 active:text-blue-700"
+              onClick={() => setEditing(true)}
+              title="לחץ לעריכת שם"
+            >{categoryName}</span>
+          )}
           <div className="flex items-center border rounded-xl overflow-hidden bg-white">
             <span className="px-2 text-gray-400 bg-gray-50 border-l py-2 text-sm">₪</span>
             <input type="number" value={val} onChange={e=>{setVal(e.target.value);onAmountChange(parseFloat(e.target.value)||0);}}
