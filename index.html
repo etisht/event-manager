@@ -55,6 +55,31 @@
       }, 800);
     }
 
+    // מיזוג נתוני Firebase עם localStorage:
+    // לרשימות (events, expenses וכו') — איחוד לפי id, מה שקיים מקומית ולא ב-Firebase נשמר.
+    // מחזיר true אם היו פריטים מקומיים שחסרו ב-Firebase (ואז צריך לשמור חזרה).
+    const ARRAY_MERGE_KEYS = ['events','expenses','eventGifts','purchases','inventoryCounts','countItems'];
+    function mergeLocalAndFirebase(fbData) {
+      let needsSave = false;
+      Object.entries(fbData).forEach(([key, fbVal]) => {
+        const localRaw = localStorage.getItem(key);
+        const localVal = localRaw ? JSON.parse(localRaw) : null;
+        if (ARRAY_MERGE_KEYS.includes(key) && Array.isArray(fbVal) && Array.isArray(localVal)) {
+          const fbIds = new Set(fbVal.map(x => x.id));
+          const localOnly = localVal.filter(x => !fbIds.has(x.id));
+          if (localOnly.length > 0) {
+            localStorage.setItem(key, JSON.stringify([...fbVal, ...localOnly]));
+            needsSave = true;
+          } else {
+            localStorage.setItem(key, JSON.stringify(fbVal));
+          }
+        } else {
+          localStorage.setItem(key, JSON.stringify(fbVal));
+        }
+      });
+      return needsSave;
+    }
+
     // מאזין בזמן אמת — מפעיל onFirstLoad בטעינה הראשונה,
     // ואחר כך שולח אירוע 'firebase-sync' בכל עדכון חיצוני
     function subscribeToFirebase(onFirstLoad) {
@@ -62,10 +87,8 @@
       return DATA_DOC.onSnapshot(snap => {
         const isSelf = (Date.now() - _lastLocalSaveAt) < IGNORE_SELF_MS;
         if (!isSelf && snap.exists) {
-          const data = snap.data();
-          Object.entries(data).forEach(([key, val]) => {
-            localStorage.setItem(key, JSON.stringify(val));
-          });
+          const needsSave = mergeLocalAndFirebase(snap.data());
+          if (needsSave) scheduleFirebaseSave(); // יש נתונים מקומיים שחסרו — דחוף חזרה
           if (!isFirst) window.dispatchEvent(new Event('firebase-sync'));
         }
         if (isFirst) { isFirst = false; onFirstLoad(snap.exists); }
