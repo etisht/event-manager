@@ -88,7 +88,7 @@
         const isSelf = (Date.now() - _lastLocalSaveAt) < IGNORE_SELF_MS;
         if (!isSelf && snap.exists) {
           const needsSave = mergeLocalAndFirebase(snap.data());
-          if (needsSave) scheduleFirebaseSave(); // יש נתונים מקומיים שחסרו — דחוף חזרה
+          if (needsSave) scheduleFirebaseSave();
           if (!isFirst) window.dispatchEvent(new Event('firebase-sync'));
         }
         if (isFirst) { isFirst = false; onFirstLoad(snap.exists); }
@@ -97,6 +97,26 @@
         if (isFirst) { isFirst = false; onFirstLoad(false); }
       });
     }
+
+    // פולינג: מושך מ-Firebase ומעדכן אם יש שינויים חיצוניים
+    function pollFirebase() {
+      const isSelf = (Date.now() - _lastLocalSaveAt) < IGNORE_SELF_MS;
+      if (isSelf) return;
+      DATA_DOC.get().then(snap => {
+        if (!snap.exists) return;
+        const needsSave = mergeLocalAndFirebase(snap.data());
+        if (needsSave) scheduleFirebaseSave();
+        window.dispatchEvent(new Event('firebase-sync'));
+      }).catch(() => {});
+    }
+
+    // רענון כשהטאב חוזר לפוקוס
+    document.addEventListener('visibilitychange', () => {
+      if (!document.hidden) pollFirebase();
+    });
+
+    // פולינג כל 60 שניות כגיבוי ל-onSnapshot
+    setInterval(pollFirebase, 60000);
   </script>
 
   <script type="text/babel">
