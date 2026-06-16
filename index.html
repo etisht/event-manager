@@ -332,9 +332,27 @@
     function EventsListScreen({ nav }) {
       const [events, setEvents]           = useState(() => LS.get('events', []));
       const [deleteConfirm, setDelete]    = useState(null);
+      const [syncing, setSyncing]         = useState(false);
+      const [lastSync, setLastSync]       = useState(null);
 
-      const refresh = useCallback(() => setEvents(LS.get('events', [])), []);
+      const refresh = useCallback(() => {
+        setEvents(LS.get('events', []));
+        setLastSync(new Date());
+      }, []);
       useFirebaseSync(refresh);
+
+      const manualSync = () => {
+        setSyncing(true);
+        DATA_DOC.get().then(snap => {
+          if (snap.exists) {
+            const needsSave = mergeLocalAndFirebase(snap.data());
+            if (needsSave) scheduleFirebaseSave();
+          }
+          setEvents(LS.get('events', []));
+          setLastSync(new Date());
+        }).catch(e => console.error('sync error', e))
+          .finally(() => setSyncing(false));
+      };
 
       const createEvent = () => {
         const id = genId();
@@ -390,7 +408,16 @@
 
       return (
         <div className="flex flex-col h-full">
-          <TopBar title="אירועים" right={<IconBtn icon="⬇️" onClick={exportCSV} />} />
+          <TopBar title="אירועים" right={
+            <div className="flex items-center gap-1">
+              <button onClick={manualSync} disabled={syncing}
+                className="w-9 h-9 flex items-center justify-center rounded-xl hover:bg-blue-700 active:bg-blue-800 transition-colors text-lg disabled:opacity-50"
+                title={lastSync ? `סונכרן ב-${lastSync.toLocaleTimeString('he-IL')}` : 'רענן נתונים'}>
+                <span className={syncing ? 'animate-spin inline-block' : ''}>🔄</span>
+              </button>
+              <IconBtn icon="⬇️" onClick={exportCSV} />
+            </div>
+          } />
           <div className="flex-1 overflow-y-auto py-2">
             {sorted.length === 0
               ? <EmptyState icon="📋" title="אין אירועים עדיין" sub="לחץ + להוספת אירוע ראשון" />
