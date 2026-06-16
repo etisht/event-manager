@@ -39,6 +39,8 @@
 
     const SYNC_KEYS = ['categories','giftTypes','events','expenses','eventGifts','purchases','inventoryCounts','countItems','inventorySeedVersion'];
     let _saveTimer = null;
+    let _lastLocalSaveAt = 0;
+    const IGNORE_SELF_MS = 2000; // ignore snapshots for 2s after our own write
 
     function scheduleFirebaseSave() {
       if (_saveTimer) clearTimeout(_saveTimer);
@@ -48,24 +50,29 @@
           const v = localStorage.getItem(k);
           if (v !== null) { try { data[k] = JSON.parse(v); } catch {} }
         });
+        _lastLocalSaveAt = Date.now();
         DATA_DOC.set(data).catch(e => console.error('Firebase save error:', e));
       }, 800);
     }
 
-    async function loadFromFirebase() {
-      try {
-        const snap = await DATA_DOC.get();
-        if (snap.exists) {
+    // מאזין בזמן אמת — מפעיל onFirstLoad בטעינה הראשונה,
+    // ואחר כך שולח אירוע 'firebase-sync' בכל עדכון חיצוני
+    function subscribeToFirebase(onFirstLoad) {
+      let isFirst = true;
+      return DATA_DOC.onSnapshot(snap => {
+        const isSelf = (Date.now() - _lastLocalSaveAt) < IGNORE_SELF_MS;
+        if (!isSelf && snap.exists) {
           const data = snap.data();
           Object.entries(data).forEach(([key, val]) => {
             localStorage.setItem(key, JSON.stringify(val));
           });
-          return true;
+          if (!isFirst) window.dispatchEvent(new Event('firebase-sync'));
         }
-      } catch(e) {
-        console.error('Firebase load error:', e);
-      }
-      return false;
+        if (isFirst) { isFirst = false; onFirstLoad(snap.exists); }
+      }, e => {
+        console.error('Firebase snapshot error:', e);
+        if (isFirst) { isFirst = false; onFirstLoad(false); }
+      });
     }
   </script>
 
@@ -91,6 +98,14 @@
     };
 
     const genId = () => Date.now() + Math.floor(Math.random() * 10000);
+
+    // hook: מרענן קומפוננטה כשמגיע עדכון חיצוני מ-Firebase
+    function useFirebaseSync(refresh) {
+      useEffect(() => {
+        window.addEventListener('firebase-sync', refresh);
+        return () => window.removeEventListener('firebase-sync', refresh);
+      }, [refresh]);
+    }
 
     const DEFAULT_CATEGORIES = [
       "רב","הגברה","עדן","מוריה","יערה",
@@ -165,23 +180,23 @@
       const [navTab, setNavTab]           = useState('events');
 
       useEffect(() => {
-        loadFromFirebase().then(hadData => {
+        const unsub = subscribeToFirebase(hadData => {
           initStore();
-          // אם Firebase היה ריק — שמור מיד את כל הנתונים מה-localStorage
           if (!hadData) {
             const data = {};
             SYNC_KEYS.forEach(k => {
               const v = localStorage.getItem(k);
               if (v !== null) { try { data[k] = JSON.parse(v); } catch {} }
             });
+            _lastLocalSaveAt = Date.now();
             DATA_DOC.set(data)
               .then(() => console.log('✅ נתונים הועלו ל-Firebase בהצלחה'))
               .catch(e => console.error('❌ שגיאה בהעלאה:', e));
           }
-        }).finally(() => {
           setIsLoggedIn(LS.get('auth', false));
           setIsReady(true);
         });
+        return () => unsub();
       }, []);
 
       if (!isReady) return <LoadingScreen />;
@@ -275,7 +290,8 @@
       const [events, setEvents]           = useState(() => LS.get('events', []));
       const [deleteConfirm, setDelete]    = useState(null);
 
-      const refresh = () => setEvents(LS.get('events', []));
+      const refresh = useCallback(() => setEvents(LS.get('events', [])), []);
+      useFirebaseSync(refresh);
 
       const createEvent = () => {
         const id = genId();
@@ -450,8 +466,10 @@
       const [adding, setAdding]   = useState(false);
       const [delCat, setDelCat]   = useState(null);
 
-      const refreshCats = () => setCats(getEventCats());
-      const refreshExps = () => setExps(LS.get('expenses',[]).filter(e=>e.eventId===eventId));
+      const refreshCats = useCallback(() => setCats(getEventCats()), []);
+      const refreshExps = useCallback(() => setExps(LS.get('expenses',[]).filter(e=>e.eventId===eventId)), []);
+      const refreshAll  = useCallback(() => { refreshCats(); refreshExps(); }, [refreshCats, refreshExps]);
+      useFirebaseSync(refreshAll);
 
       const saveEventCats = (updatedList) => {
         LS.set('events', LS.get('events', []).map(e => e.id === eventId ? { ...e, categories: updatedList } : e));
@@ -866,7 +884,8 @@
       const [counts, setCounts]= useState(() => LS.get('inventoryCounts', []));
       const [showPur, setShowPur] = useState(false);
 
-      const refresh = () => { setGts(LS.get('giftTypes',[])); setPurs(LS.get('purchases',[])); setCounts(LS.get('inventoryCounts',[])); };
+      const refresh = useCallback(() => { setGts(LS.get('giftTypes',[])); setPurs(LS.get('purchases',[])); setCounts(LS.get('inventoryCounts',[])); }, []);
+      useFirebaseSync(refresh);
 
       const recordPurchase = (giftTypeId, giftTypeName, qty, notes) => {
         LS.set('purchases', [...LS.get('purchases',[]), { id:genId(), giftTypeId, giftTypeName, quantity:qty, notes, purchaseDate:Date.now() }]);
