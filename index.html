@@ -866,14 +866,25 @@
 
       const saveGifts = () => {
         const oldGifts = LS.get('eventGifts', []).filter(g => g.eventId === eventId);
-        const oldMap   = {};
-        oldGifts.forEach(g => { oldMap[g.giftTypeId] = g.quantity; });
+        const oldByGiftTypeId = {};
+        oldGifts.forEach(g => { oldByGiftTypeId[g.giftTypeId] = g; });
 
-        const newGifts = giftTypes.map(gt => ({
-          id: genId(), eventId, giftTypeId: gt.id, giftTypeName: gt.name,
-          quantity:  (draft[gt.id]?.qty  ?? 0),
-          unitPrice: (draft[gt.id]?.price ?? gt.defaultUnitPrice),
-        }));
+        const newGifts = giftTypes.map(gt => {
+          const existing = oldByGiftTypeId[gt.id];
+          return {
+            id: existing?.id ?? genId(), // שמור ID קיים כדי שהסנכרון לא יחיה גרסאות ישנות
+            eventId, giftTypeId: gt.id, giftTypeName: gt.name,
+            quantity:  (draft[gt.id]?.qty  ?? 0),
+            unitPrice: (draft[gt.id]?.price ?? gt.defaultUnitPrice),
+          };
+        });
+
+        // סמן כמחוקים כל מתנות ישנות שה-ID שלהן לא נשמר (לא אמור לקרות, אבל להיות בטוח)
+        const newIds = new Set(newGifts.map(g => g.id));
+        oldGifts.filter(g => !newIds.has(g.id)).forEach(g => markDeleted(g.id));
+
+        const oldMap = {};
+        oldGifts.forEach(g => { oldMap[g.giftTypeId] = g.quantity; });
 
         const deltas = {};
         giftTypes.forEach(gt => {
