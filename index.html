@@ -37,7 +37,7 @@
     const _db = firebase.firestore();
     const DATA_DOC = _db.collection('appData').doc('main');
 
-    const SYNC_KEYS = ['categories','giftTypes','events','expenses','eventGifts','purchases','inventoryCounts','countItems','inventorySeedVersion'];
+    const SYNC_KEYS = ['categories','giftTypes','events','expenses','eventGifts','purchases','inventoryCounts','countItems','inventorySeedVersion','deletedIds'];
     let _saveTimer = null;
     let _lastLocalSaveAt = 0;
     const IGNORE_SELF_MS = 2000; // ignore snapshots for 2s after our own write
@@ -62,23 +62,44 @@
       _doFirebaseSave();
     }
 
+    // tombstones: מסמן id שנמחק כדי שמכשירים אחרים לא "יחיו" אותו מחדש
+    function markDeleted(id) {
+      const existing = JSON.parse(localStorage.getItem('deletedIds') || '{}');
+      existing[String(id)] = Date.now();
+      localStorage.setItem('deletedIds', JSON.stringify(existing));
+    }
+
     // מיזוג נתוני Firebase עם localStorage:
     // לרשימות (events, expenses וכו') — איחוד לפי id, מה שקיים מקומית ולא ב-Firebase נשמר.
+    // פריטים שב-deletedIds מסוננים בכל מקרה.
     // מחזיר true אם היו פריטים מקומיים שחסרו ב-Firebase (ואז צריך לשמור חזרה).
     const ARRAY_MERGE_KEYS = ['events','expenses','eventGifts','purchases','inventoryCounts','countItems'];
     function mergeLocalAndFirebase(fbData) {
       let needsSave = false;
+
+      // ממזג deletedIds ראשון (איחוד של מחיקות משני המכשירים)
+      const localDeleted = JSON.parse(localStorage.getItem('deletedIds') || '{}');
+      const fbDeleted = fbData.deletedIds || {};
+      const mergedDeleted = { ...localDeleted, ...fbDeleted };
+      const deletedSet = new Set(Object.keys(mergedDeleted));
+      if (JSON.stringify(mergedDeleted) !== JSON.stringify(localDeleted)) {
+        localStorage.setItem('deletedIds', JSON.stringify(mergedDeleted));
+        needsSave = true;
+      }
+
       Object.entries(fbData).forEach(([key, fbVal]) => {
+        if (key === 'deletedIds') return;
         const localRaw = localStorage.getItem(key);
         const localVal = localRaw ? JSON.parse(localRaw) : null;
         if (ARRAY_MERGE_KEYS.includes(key) && Array.isArray(fbVal) && Array.isArray(localVal)) {
-          const fbIds = new Set(fbVal.map(x => x.id));
-          const localOnly = localVal.filter(x => !fbIds.has(x.id));
+          const fbFiltered = fbVal.filter(x => !deletedSet.has(String(x.id)));
+          const fbIds = new Set(fbFiltered.map(x => x.id));
+          const localOnly = localVal.filter(x => !fbIds.has(x.id) && !deletedSet.has(String(x.id)));
           if (localOnly.length > 0) {
-            localStorage.setItem(key, JSON.stringify([...fbVal, ...localOnly]));
+            localStorage.setItem(key, JSON.stringify([...fbFiltered, ...localOnly]));
             needsSave = true;
           } else {
-            localStorage.setItem(key, JSON.stringify(fbVal));
+            localStorage.setItem(key, JSON.stringify(fbFiltered));
           }
         } else {
           localStorage.setItem(key, JSON.stringify(fbVal));
@@ -1070,6 +1091,8 @@
           const snap = JSON.parse(c.snapshotJson||'{}');
           LS.set('giftTypes', LS.get('giftTypes',[]).map(gt => snap[gt.id]!==undefined ? {...gt, currentInventory:parseInt(snap[gt.id])} : gt));
         }
+        markDeleted(countId);
+        LS.get('countItems',[]).filter(x=>x.countId===countId).forEach(x=>markDeleted(x.id));
         LS.set('inventoryCounts', LS.get('inventoryCounts',[]).filter(x=>x.id!==countId));
         LS.set('countItems',      LS.get('countItems',[]).filter(x=>x.countId!==countId));
         saveToFirebaseNow();
@@ -1238,6 +1261,8 @@
           const snap = JSON.parse(count.snapshotJson||'{}');
           LS.set('giftTypes', LS.get('giftTypes',[]).map(gt=>snap[gt.id]!==undefined?{...gt,currentInventory:parseInt(snap[gt.id])}:gt));
         }
+        markDeleted(countId);
+        LS.get('countItems',[]).filter(i=>i.countId===countId).forEach(i=>markDeleted(i.id));
         LS.set('inventoryCounts', LS.get('inventoryCounts',[]).filter(c=>c.id!==countId));
         LS.set('countItems',      LS.get('countItems',[]).filter(i=>i.countId!==countId));
         saveToFirebaseNow();
