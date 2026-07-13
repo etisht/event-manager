@@ -872,35 +872,30 @@
     // ──────────────────────────────────────────────
     // GIFTS TAB
     // ──────────────────────────────────────────────
-    // מחשב מחדש currentInventory מספירה אחרונה מאושרת + רכישות − מתנות
-    // (לא תלוי ב-running total שיכול להיות מושחת מבאגי סנכרון)
+    // חישוב מחדש: ספירה אחרונה מאושרת פחות מתנות שניתנו באירועים מתאריך הספירה ואילך
+    // לא כולל רכישות — הן כבר מגולמות בספירה הפיזית
     function recalcInventory() {
-      const allCounts = LS.get('inventoryCounts', []).filter(c => c.isApproved)
-        .sort((a,b) => b.countDate - a.countDate);
-      const lastCount = allCounts[0];
-      const baseDate  = lastCount?.countDate ?? 0;
+      const lastCount = LS.get('inventoryCounts', []).filter(c => c.isApproved)
+        .sort((a,b) => b.countDate - a.countDate)[0];
+      if (!lastCount) return;
 
       const baseline = {};
-      if (lastCount) {
-        LS.get('countItems', []).filter(i => i.countId === lastCount.id)
-          .forEach(i => { baseline[i.giftTypeId] = i.countedQuantity; });
-      }
+      LS.get('countItems', []).filter(i => i.countId === lastCount.id)
+        .forEach(i => { baseline[i.giftTypeId] = i.countedQuantity; });
 
-      const purchased = {};
-      LS.get('purchases', []).filter(p => p.purchaseDate > baseDate)
-        .forEach(p => { purchased[p.giftTypeId] = (purchased[p.giftTypeId]||0) + p.quantity; });
-
+      // רק אירועים מתאריך הספירה ואילך (כולל יום הספירה עצמו)
+      const countDay = new Date(lastCount.countDate);
+      countDay.setHours(0,0,0,0);
       const eventIds = new Set(
-        LS.get('events', []).filter(e => e.date > baseDate).map(e => e.id)
+        LS.get('events', []).filter(e => e.date >= countDay.getTime()).map(e => e.id)
       );
       const given = {};
       LS.get('eventGifts', []).filter(g => eventIds.has(g.eventId))
         .forEach(g => { given[g.giftTypeId] = (given[g.giftTypeId]||0) + g.quantity; });
 
       const gts = LS.get('giftTypes', []).map(gt => {
-        if (baseline[gt.id] === undefined && !lastCount) return gt; // אין ספירה בסיסית
-        const base = baseline[gt.id] ?? gt.currentInventory;
-        return { ...gt, currentInventory: Math.max(0, base + (purchased[gt.id]||0) - (given[gt.id]||0)) };
+        if (baseline[gt.id] === undefined) return gt;
+        return { ...gt, currentInventory: Math.max(0, baseline[gt.id] - (given[gt.id]||0)) };
       });
       LS.set('giftTypes', gts);
     }
@@ -1121,14 +1116,14 @@
 
       const recordPurchase = (giftTypeId, giftTypeName, qty, notes) => {
         LS.set('purchases', [...LS.get('purchases',[]), { id:genId(), giftTypeId, giftTypeName, quantity:qty, notes, purchaseDate:Date.now() }]);
-        recalcInventory();
+        LS.set('giftTypes', LS.get('giftTypes',[]).map(gt => gt.id===giftTypeId ? {...gt, currentInventory: gt.currentInventory+qty} : gt));
         refresh(); setShowPur(false);
       };
 
       const delPurchase = (p) => {
         markDeleted(p.id);
         LS.set('purchases', LS.get('purchases',[]).filter(x=>x.id!==p.id));
-        recalcInventory();
+        LS.set('giftTypes', LS.get('giftTypes',[]).map(gt => gt.id===p.giftTypeId ? {...gt, currentInventory: Math.max(0,gt.currentInventory-p.quantity)} : gt));
         saveToFirebaseNow();
         refresh();
       };
@@ -1163,11 +1158,20 @@
         dlBlob('﻿'+rows.map(r=>r.map(c=>`"${c}"`).join(',')).join('\n'), 'inventory.csv', 'text/csv;charset=utf-8');
       };
 
+      const doRecalc = () => {
+        const lastCount = LS.get('inventoryCounts',[]).filter(c=>c.isApproved).sort((a,b)=>b.countDate-a.countDate)[0];
+        if (!lastCount) { alert('אין ספירת מלאי מאושרת — לא ניתן לחשב מחדש ללא בסיס.'); return; }
+        const d = new Date(lastCount.countDate); d.setHours(0,0,0,0);
+        if (!window.confirm(`חישוב מחדש:\nספירת ${fmtDate(lastCount.countDate)} פחות מתנות מאירועים מ-${fmtDate(d.getTime())} ואילך.\nלהמשיך?`)) return;
+        recalcInventory();
+        refresh();
+      };
+
       const tabs = ['מלאי נוכחי','רכישות','ספירות מלאי'];
 
       return (
         <div className="flex flex-col h-full">
-          <TopBar title="מלאי" right={<div className="flex gap-1"><IconBtn icon="⬇️" onClick={exportCSV} /><IconBtn icon="⚙️" onClick={()=>nav('giftTypes')} /></div>} />
+          <TopBar title="מלאי" right={<div className="flex gap-1"><IconBtn icon="🔁" onClick={doRecalc} title="חשב מחדש מלאי מספירה אחרונה" /><IconBtn icon="⬇️" onClick={exportCSV} /><IconBtn icon="⚙️" onClick={()=>nav('giftTypes')} /></div>} />
           <div className="flex border-b bg-white shrink-0">
             {tabs.map((t,i)=>(
               <button key={i} onClick={()=>setTab(i)} className={`flex-1 py-2.5 text-sm font-medium transition-colors ${tab===i?'border-b-2 border-blue-600 text-blue-600':'text-gray-400'}`}>{t}</button>
