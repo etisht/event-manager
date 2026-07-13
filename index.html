@@ -42,17 +42,24 @@
     let _lastLocalSaveAt = 0;
     const IGNORE_SELF_MS = 2000; // ignore snapshots for 2s after our own write
 
+    function _doFirebaseSave() {
+      const data = {};
+      SYNC_KEYS.forEach(k => {
+        const v = localStorage.getItem(k);
+        if (v !== null) { try { data[k] = JSON.parse(v); } catch {} }
+      });
+      _lastLocalSaveAt = Date.now();
+      DATA_DOC.set(data).catch(e => console.error('Firebase save error:', e));
+    }
+
     function scheduleFirebaseSave() {
       if (_saveTimer) clearTimeout(_saveTimer);
-      _saveTimer = setTimeout(() => {
-        const data = {};
-        SYNC_KEYS.forEach(k => {
-          const v = localStorage.getItem(k);
-          if (v !== null) { try { data[k] = JSON.parse(v); } catch {} }
-        });
-        _lastLocalSaveAt = Date.now();
-        DATA_DOC.set(data).catch(e => console.error('Firebase save error:', e));
-      }, 800);
+      _saveTimer = setTimeout(_doFirebaseSave, 800);
+    }
+
+    function saveToFirebaseNow() {
+      if (_saveTimer) { clearTimeout(_saveTimer); _saveTimer = null; }
+      _doFirebaseSave();
     }
 
     // מיזוג נתוני Firebase עם localStorage:
@@ -1065,6 +1072,7 @@
         }
         LS.set('inventoryCounts', LS.get('inventoryCounts',[]).filter(x=>x.id!==countId));
         LS.set('countItems',      LS.get('countItems',[]).filter(x=>x.countId!==countId));
+        saveToFirebaseNow();
         refresh();
       };
 
@@ -1232,6 +1240,7 @@
         }
         LS.set('inventoryCounts', LS.get('inventoryCounts',[]).filter(c=>c.id!==countId));
         LS.set('countItems',      LS.get('countItems',[]).filter(i=>i.countId!==countId));
+        saveToFirebaseNow();
         onBack();
       };
 
