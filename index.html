@@ -510,6 +510,25 @@
         dlBlob(csv, 'events.csv', 'text/csv;charset=utf-8');
       };
 
+      const exportGiftsCSV = () => {
+        const evs  = [...LS.get('events', [])].sort((a,b) => b.date - a.date);
+        const gifs = LS.get('eventGifts', []);
+        const gts  = LS.get('giftTypes', []).sort((a,b) => (a.sortOrder||0) - (b.sortOrder||0));
+        const header = ['אירוע','תאריך','מיקום', ...gts.map(g=>g.name), 'סה"כ כמות'];
+        const rows = [header];
+        evs.forEach(e => {
+          const evGifts = gifs.filter(g => g.eventId === e.id);
+          const qtys = gts.map(gt => {
+            const entry = evGifts.find(g => g.giftTypeId === gt.id);
+            return entry?.quantity ?? 0;
+          });
+          const total = qtys.reduce((s,q) => s+q, 0);
+          rows.push([e.name || e.location, fmtDate(e.date), e.location, ...qtys, total]);
+        });
+        const csv = '﻿' + rows.map(r => r.map(c => `"${c}"`).join(',')).join('\n');
+        dlBlob(csv, 'gifts-by-event.csv', 'text/csv;charset=utf-8');
+      };
+
       const sorted = [...events].sort((a,b) => b.date - a.date);
 
       return (
@@ -521,7 +540,8 @@
                 title={lastSync ? `סונכרן ב-${lastSync.toLocaleTimeString('he-IL')}` : 'רענן נתונים'}>
                 <span className={syncing ? 'animate-spin inline-block' : ''}>🔄</span>
               </button>
-              <IconBtn icon="⬇️" onClick={exportCSV} />
+              <IconBtn icon="⬇️" onClick={exportCSV} title="ייצוא סיכום אירועים" />
+              <IconBtn icon="🎁" onClick={exportGiftsCSV} title="ייצוא מתנות לפי אירוע" />
             </div>
           } />
           <div className="flex-1 overflow-y-auto py-2">
