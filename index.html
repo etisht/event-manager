@@ -1163,19 +1163,11 @@
         dlBlob('﻿'+rows.map(r=>r.map(c=>`"${c}"`).join(',')).join('\n'), 'inventory.csv', 'text/csv;charset=utf-8');
       };
 
-      const doRecalc = () => {
-        const lastCount = LS.get('inventoryCounts',[]).filter(c=>c.isApproved).sort((a,b)=>b.countDate-a.countDate)[0];
-        if (!lastCount) { alert('אין ספירת מלאי מאושרת — לא ניתן לחשב מחדש ללא בסיס.'); return; }
-        if (!window.confirm(`מחשב מחדש מלאי לפי ספירת ${fmtDate(lastCount.countDate)} + רכישות − מתנות שנתנו לאחריה.\nלהמשיך?`)) return;
-        recalcInventory();
-        refresh();
-      };
-
       const tabs = ['מלאי נוכחי','רכישות','ספירות מלאי'];
 
       return (
         <div className="flex flex-col h-full">
-          <TopBar title="מלאי" right={<div className="flex gap-1"><IconBtn icon="🔁" onClick={doRecalc} title="חשב מחדש מלאי מספירה אחרונה" /><IconBtn icon="⬇️" onClick={exportCSV} /><IconBtn icon="⚙️" onClick={()=>nav('giftTypes')} /></div>} />
+          <TopBar title="מלאי" right={<div className="flex gap-1"><IconBtn icon="⬇️" onClick={exportCSV} /><IconBtn icon="⚙️" onClick={()=>nav('giftTypes')} /></div>} />
           <div className="flex border-b bg-white shrink-0">
             {tabs.map((t,i)=>(
               <button key={i} onClick={()=>setTab(i)} className={`flex-1 py-2.5 text-sm font-medium transition-colors ${tab===i?'border-b-2 border-blue-600 text-blue-600':'text-gray-400'}`}>{t}</button>
