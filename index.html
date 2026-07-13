@@ -872,6 +872,39 @@
     // ──────────────────────────────────────────────
     // GIFTS TAB
     // ──────────────────────────────────────────────
+    // מחשב מחדש currentInventory מספירה אחרונה מאושרת + רכישות − מתנות
+    // (לא תלוי ב-running total שיכול להיות מושחת מבאגי סנכרון)
+    function recalcInventory() {
+      const allCounts = LS.get('inventoryCounts', []).filter(c => c.isApproved)
+        .sort((a,b) => b.countDate - a.countDate);
+      const lastCount = allCounts[0];
+      const baseDate  = lastCount?.countDate ?? 0;
+
+      const baseline = {};
+      if (lastCount) {
+        LS.get('countItems', []).filter(i => i.countId === lastCount.id)
+          .forEach(i => { baseline[i.giftTypeId] = i.countedQuantity; });
+      }
+
+      const purchased = {};
+      LS.get('purchases', []).filter(p => p.purchaseDate > baseDate)
+        .forEach(p => { purchased[p.giftTypeId] = (purchased[p.giftTypeId]||0) + p.quantity; });
+
+      const eventIds = new Set(
+        LS.get('events', []).filter(e => e.date > baseDate).map(e => e.id)
+      );
+      const given = {};
+      LS.get('eventGifts', []).filter(g => eventIds.has(g.eventId))
+        .forEach(g => { given[g.giftTypeId] = (given[g.giftTypeId]||0) + g.quantity; });
+
+      const gts = LS.get('giftTypes', []).map(gt => {
+        if (baseline[gt.id] === undefined && !lastCount) return gt; // אין ספירה בסיסית
+        const base = baseline[gt.id] ?? gt.currentInventory;
+        return { ...gt, currentInventory: Math.max(0, base + (purchased[gt.id]||0) - (given[gt.id]||0)) };
+      });
+      LS.set('giftTypes', gts);
+    }
+
     function GiftsTab({ eventId, location, dateTs }) {
       const [giftTypes] = useState(() => LS.get('giftTypes', []));
       const [draft, setDraft] = useState(() => {
@@ -899,23 +932,15 @@
           };
         });
 
-        // סמן כמחוקים כל מתנות ישנות שה-ID שלהן לא נשמר (לא אמור לקרות, אבל להיות בטוח)
+        // סמן כמחוקים כל מתנות ישנות שה-ID שלהן לא נשמר
         const newIds = new Set(newGifts.map(g => g.id));
         oldGifts.filter(g => !newIds.has(g.id)).forEach(g => markDeleted(g.id));
-
-        const oldMap = {};
-        oldGifts.forEach(g => { oldMap[g.giftTypeId] = g.quantity; });
-
-        const deltas = {};
-        giftTypes.forEach(gt => {
-          deltas[gt.id] = (draft[gt.id]?.qty ?? 0) - (oldMap[gt.id] ?? 0);
-        });
 
         const allGifts = LS.get('eventGifts', []).filter(g => g.eventId !== eventId);
         LS.set('eventGifts', [...allGifts, ...newGifts]);
 
-        const gts = LS.get('giftTypes', []).map(gt => ({ ...gt, currentInventory: gt.currentInventory - (deltas[gt.id] || 0) }));
-        LS.set('giftTypes', gts);
+        // חישוב מחדש מלא במקום delta — מונע טעויות סנכרון מצטברות
+        recalcInventory();
 
         setSaved(true); setTimeout(() => setSaved(false), 2000);
       };
@@ -1096,13 +1121,15 @@
 
       const recordPurchase = (giftTypeId, giftTypeName, qty, notes) => {
         LS.set('purchases', [...LS.get('purchases',[]), { id:genId(), giftTypeId, giftTypeName, quantity:qty, notes, purchaseDate:Date.now() }]);
-        LS.set('giftTypes', LS.get('giftTypes',[]).map(gt => gt.id===giftTypeId ? {...gt, currentInventory: gt.currentInventory+qty} : gt));
+        recalcInventory();
         refresh(); setShowPur(false);
       };
 
       const delPurchase = (p) => {
+        markDeleted(p.id);
         LS.set('purchases', LS.get('purchases',[]).filter(x=>x.id!==p.id));
-        LS.set('giftTypes', LS.get('giftTypes',[]).map(gt => gt.id===p.giftTypeId ? {...gt, currentInventory: Math.max(0,gt.currentInventory-p.quantity)} : gt));
+        recalcInventory();
+        saveToFirebaseNow();
         refresh();
       };
 
@@ -1136,11 +1163,19 @@
         dlBlob('﻿'+rows.map(r=>r.map(c=>`"${c}"`).join(',')).join('\n'), 'inventory.csv', 'text/csv;charset=utf-8');
       };
 
+      const doRecalc = () => {
+        const lastCount = LS.get('inventoryCounts',[]).filter(c=>c.isApproved).sort((a,b)=>b.countDate-a.countDate)[0];
+        if (!lastCount) { alert('אין ספירת מלאי מאושרת — לא ניתן לחשב מחדש ללא בסיס.'); return; }
+        if (!window.confirm(`מחשב מחדש מלאי לפי ספירת ${fmtDate(lastCount.countDate)} + רכישות − מתנות שנתנו לאחריה.\nלהמשיך?`)) return;
+        recalcInventory();
+        refresh();
+      };
+
       const tabs = ['מלאי נוכחי','רכישות','ספירות מלאי'];
 
       return (
         <div className="flex flex-col h-full">
-          <TopBar title="מלאי" right={<div className="flex gap-1"><IconBtn icon="⬇️" onClick={exportCSV} /><IconBtn icon="⚙️" onClick={()=>nav('giftTypes')} /></div>} />
+          <TopBar title="מלאי" right={<div className="flex gap-1"><IconBtn icon="🔁" onClick={doRecalc} title="חשב מחדש מלאי מספירה אחרונה" /><IconBtn icon="⬇️" onClick={exportCSV} /><IconBtn icon="⚙️" onClick={()=>nav('giftTypes')} /></div>} />
           <div className="flex border-b bg-white shrink-0">
             {tabs.map((t,i)=>(
               <button key={i} onClick={()=>setTab(i)} className={`flex-1 py-2.5 text-sm font-medium transition-colors ${tab===i?'border-b-2 border-blue-600 text-blue-600':'text-gray-400'}`}>{t}</button>
