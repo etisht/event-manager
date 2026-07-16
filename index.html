@@ -931,11 +931,17 @@
         const newIds = new Set(newGifts.map(g => g.id));
         oldGifts.filter(g => !newIds.has(g.id)).forEach(g => markDeleted(g.id));
 
+        // חשב delta לפי ההבדל בין ישן לחדש ועדכן מלאי
+        const oldMap = {};
+        oldGifts.forEach(g => { oldMap[g.giftTypeId] = g.quantity; });
+        const updatedGts = LS.get('giftTypes', []).map(gt => {
+          const delta = (draft[gt.id]?.qty ?? 0) - (oldMap[gt.id] ?? 0);
+          return delta !== 0 ? { ...gt, currentInventory: Math.max(0, gt.currentInventory - delta) } : gt;
+        });
+        LS.set('giftTypes', updatedGts);
+
         const allGifts = LS.get('eventGifts', []).filter(g => g.eventId !== eventId);
         LS.set('eventGifts', [...allGifts, ...newGifts]);
-
-        // חישוב מחדש מלא במקום delta — מונע טעויות סנכרון מצטברות
-        recalcInventory();
 
         setSaved(true); setTimeout(() => setSaved(false), 2000);
       };
