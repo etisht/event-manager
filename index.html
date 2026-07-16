@@ -942,6 +942,7 @@
 
         const allGifts = LS.get('eventGifts', []).filter(g => g.eventId !== eventId);
         LS.set('eventGifts', [...allGifts, ...newGifts]);
+        saveToFirebaseNow();
 
         setSaved(true); setTimeout(() => setSaved(false), 2000);
       };
@@ -1123,6 +1124,7 @@
       const recordPurchase = (giftTypeId, giftTypeName, qty, notes) => {
         LS.set('purchases', [...LS.get('purchases',[]), { id:genId(), giftTypeId, giftTypeName, quantity:qty, notes, purchaseDate:Date.now() }]);
         LS.set('giftTypes', LS.get('giftTypes',[]).map(gt => gt.id===giftTypeId ? {...gt, currentInventory: gt.currentInventory+qty} : gt));
+        saveToFirebaseNow();
         refresh(); setShowPur(false);
       };
 
@@ -1320,6 +1322,7 @@
           return it?{...gt,currentInventory:it.countedQuantity}:gt;
         }));
         LS.set('inventoryCounts', LS.get('inventoryCounts',[]).map(c=>c.id===countId?{...c,isApproved:true}:c));
+        saveToFirebaseNow();
         setCount(c=>({...c,isApproved:true}));
         setShowApp(false);
       };
